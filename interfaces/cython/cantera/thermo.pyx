@@ -1,6 +1,14 @@
 # This file is part of Cantera. See License.txt in the top-level directory or
 # at https://cantera.org/license.txt for license and copyright information.
 
+__all__ = [
+    "Species",
+    "ThermoPhase",
+    "InterfacePhase",
+    "PureFluid",
+    "Element",
+]
+
 import warnings
 import weakref
 import numbers as _numbers

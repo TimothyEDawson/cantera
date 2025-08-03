@@ -1,6 +1,13 @@
 # This file is part of Cantera. See License.txt in the top-level directory or
 # at https://cantera.org/license.txt for license and copyright information.
 
+__all__ = [
+    "SystemJacobian",
+    "EigenSparseJacobian",
+    "EigenSparseDirectJacobian",
+    "BandedJacobian",
+]
+
 from ._utils cimport stringify, pystr, py_to_anymap, anymap_to_py
 from .kinetics cimport get_from_sparse
 

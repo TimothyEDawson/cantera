@@ -1,6 +1,8 @@
 # This file is part of Cantera. See License.txt in the top-level directory or
 # at https://cantera.org/license.txt for license and copyright information.
 
+__all__ = ["list_data_files"]
+
 from pathlib import Path
 from ._utils import get_data_directories, add_directory
 

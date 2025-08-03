@@ -1,9 +1,41 @@
 # This file is part of Cantera. See License.txt in the top-level directory or
 # at https://cantera.org/license.txt for license and copyright information.
 
+__all__ = [
+    "ReactorBase",
+    "Reactor",
+    "MoleReactor",
+    "Reservoir",
+    "ConstPressureReactor",
+    "ConstPressureMoleReactor",
+    "IdealGasReactor",
+    "IdealGasMoleReactor",
+    "IdealGasConstPressureReactor",
+    "IdealGasConstPressureMoleReactor",
+    "FlowReactor",
+    "ExtensibleReactor",
+    "ExtensibleIdealGasReactor",
+    "ExtensibleConstPressureReactor",
+    "ExtensibleIdealGasConstPressureReactor",
+    "ExtensibleMoleReactor",
+    "ExtensibleIdealGasMoleReactor",
+    "ExtensibleConstPressureMoleReactor",
+    "ExtensibleIdealGasConstPressureMoleReactor",
+    "ReactorSurface",
+    "ConnectorNode",
+    "WallBase",
+    "Wall",
+    "FlowDevice",
+    "MassFlowController",
+    "Valve",
+    "PressureController",
+    "ReactorNet",
+]
+
 import warnings
 import numbers as _numbers
 from cython.operator cimport dereference as deref
+import numpy as np
 
 from .thermo cimport *
 from ._utils cimport pystr, stringify, comp_map, py_to_anymap, anymap_to_py

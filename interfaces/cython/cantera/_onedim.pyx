@@ -1,6 +1,22 @@
 # This file is part of Cantera. See License.txt in the top-level directory or
 # at https://cantera.org/license.txt for license and copyright information.
 
+__all__ = [
+    "Domain1D",
+    "Boundary1D",
+    "Inlet1D",
+    "Outlet1D",
+    "OutletReservoir1D",
+    "SymmetryPlane1D",
+    "Surface1D",
+    "ReactingSurface1D",
+    "FlowBase",
+    "FreeFlow",
+    "UnstrainedFlow",
+    "AxisymmetricFlow",
+    "Sim1D",
+]
+
 from .interrupts import no_op
 import warnings
 import numpy as np

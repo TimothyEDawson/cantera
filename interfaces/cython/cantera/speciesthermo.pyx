@@ -1,6 +1,15 @@
 # This file is part of Cantera. See License.txt in the top-level directory or
 # at https://cantera.org/license.txt for license and copyright information.
 
+__all__ = [
+    "SpeciesThermo",
+    "ConstantCp",
+    "Mu0Poly",
+    "NasaPoly2",
+    "Nasa9PolyMultiTempRegion",
+    "ShomatePoly2",
+]
+
 cimport numpy as np
 import numpy as np
 

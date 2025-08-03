@@ -2,6 +2,14 @@
 # at https://cantera.org/license.txt for license and copyright information.
 from __future__ import annotations
 
+__all__ = [
+    "Solution",
+    "Interface",
+    "DustyGas",
+    "Quantity",
+    "SolutionArray",
+]
+
 from ._cantera import *
 import numpy as np
 import csv as _csv

@@ -1,6 +1,8 @@
 # This file is part of Cantera. See License.txt in the top-level directory or
 # at https://cantera.org/license.txt for license and copyright information.
 
+__all__ = ["YamlWriter"]
+
 from .solutionbase cimport *
 from ._utils cimport *
 from cython.operator import dereference as deref

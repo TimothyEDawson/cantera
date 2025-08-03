@@ -1,10 +1,13 @@
 # This file is part of Cantera. See License.txt in the top-level directory or
 # at https://cantera.org/license.txt for license and copyright information.
 
+__all__ = ["import_phases", "add_module_directory"]
+
 import os
 import inspect as _inspect
 
-from . import Solution, add_directory
+from .composite import Solution
+from ._utils import add_directory
 
 
 def import_phases(filename, phase_names):

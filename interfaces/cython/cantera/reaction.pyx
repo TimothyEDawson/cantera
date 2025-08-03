@@ -1,6 +1,35 @@
 # This file is part of Cantera. See License.txt in the top-level directory or
 # at https://cantera.org/license.txt for license and copyright information.
 
+__all__ = [
+    "ReactionRate",
+    "ArrheniusRateBase",
+    "ArrheniusRate",
+    "BlowersMaselRate",
+    "TwoTempPlasmaRate",
+    "ElectronCollisionPlasmaRate",
+    "FalloffRate",
+    "LindemannRate",
+    "TroeRate",
+    "SriRate",
+    "TsangRate",
+    "PlogRate",
+    "LinearBurkeRate",
+    "ChebyshevRate",
+    "CustomRate",
+    "ExtensibleRate",
+    "ExtensibleRateData",
+    "InterfaceRateBase",
+    "InterfaceArrheniusRate",
+    "InterfaceBlowersMaselRate",
+    "StickRateBase",
+    "StickingArrheniusRate",
+    "StickingBlowersMaselRate",
+    "ThirdBody",
+    "Reaction",
+    "Arrhenius",
+]
+
 cimport numpy as np
 import numpy as np
 import warnings

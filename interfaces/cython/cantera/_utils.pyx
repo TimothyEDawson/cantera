@@ -1,6 +1,24 @@
 # This file is part of Cantera. See License.txt in the top-level directory or
 # at https://cantera.org/license.txt for license and copyright information.
 
+__all__ = [
+    "__version__",
+    "__sundials_version__",
+    "__git_commit__",
+    "add_directory",
+    "get_data_directories",
+    "debug_mode_enabled",
+    "print_stack_trace_on_segfault",
+    "appdelete",
+    "use_sparse",
+    "make_deprecation_warnings_fatal",
+    "suppress_deprecation_warnings",
+    "use_legacy_rate_constants",
+    "hdf_support",
+    "CanteraError",
+    "AnyMap",
+]
+
 import sys
 import os
 import warnings

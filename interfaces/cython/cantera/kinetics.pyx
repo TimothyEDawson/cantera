@@ -1,6 +1,8 @@
 # This file is part of Cantera. See License.txt in the top-level directory or
 # at https://cantera.org/license.txt for license and copyright information.
 
+__all__ = ["Kinetics", "InterfaceKinetics"]
+
 from ctypes import c_int
 import warnings
 cimport numpy as np

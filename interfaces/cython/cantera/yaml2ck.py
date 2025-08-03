@@ -54,6 +54,17 @@ Unsupported Reaction models (not comprehensive):
 """
 from __future__ import annotations
 
+__all__ = [
+    "HeaderTextWrapper",
+    "build_elements_text",
+    "build_thermodynamics_text",
+    "build_reactions_text",
+    "build_transport_text",
+    "convert",
+    "create_argparser",
+    "main",
+]
+
 import sys
 import math
 import argparse

@@ -1,6 +1,14 @@
 # This file is part of Cantera. See License.txt in the top-level directory or
 # at https://cantera.org/license.txt for license and copyright information.
 
+__all__ = [
+    "draw_reactor",
+    "draw_reactor_net",
+    "draw_surface",
+    "draw_flow_controllers",
+    "draw_walls",
+]
+
 import importlib.metadata as _metadata
 from functools import wraps as _wraps
 
