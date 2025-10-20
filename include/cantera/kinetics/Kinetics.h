@@ -163,21 +163,29 @@ public:
     }
 
     //! Check that the specified reaction index is in range
-    //! Throws an exception if i is greater than nReactions()
-    void checkReactionIndex(size_t m) const;
+    /*!
+     * @since Starting in %Cantera 3.2, returns the input reaction index, if valid.
+     * @exception Throws an IndexError if m is greater than nReactions()-1
+     */
+    size_t checkReactionIndex(size_t m) const;
 
     //! Check that an array size is at least nReactions()
     //! Throws an exception if ii is less than nReactions(). Used before calls
     //! which take an array pointer.
+    //! @deprecated To be removed after %Cantera 3.2. Only used by legacy CLib.
     void checkReactionArraySize(size_t ii) const;
 
     //! Check that the specified species index is in range
-    //! Throws an exception if k is greater than nSpecies()-1
-    void checkSpeciesIndex(size_t k) const;
+    /*!
+     * @since Starting in %Cantera 3.2, returns the input species index, if valid.
+     * @exception Throws an IndexError if k is greater than nSpecies()-1
+     */
+    size_t checkSpeciesIndex(size_t k) const;
 
     //! Check that an array size is at least nSpecies()
     //! Throws an exception if kk is less than nSpecies(). Used before calls
     //! which take an array pointer.
+    //! @deprecated To be removed after %Cantera 3.2. Only used by legacy CLib.
     void checkSpeciesArraySize(size_t mm) const;
 
     //! @}
@@ -195,12 +203,16 @@ public:
     }
 
     //! Check that the specified phase index is in range
-    //! Throws an exception if m is greater than nPhases()
-    void checkPhaseIndex(size_t m) const;
+    /*!
+     * @since Starting in %Cantera 3.2, returns the input phase index, if valid.
+     * @exception Throws an IndexError if m is greater than nPhases()-1
+     */
+    size_t checkPhaseIndex(size_t m) const;
 
     //! Check that an array size is at least nPhases()
     //! Throws an exception if mm is less than nPhases(). Used before calls
     //! which take an array pointer.
+    //! @deprecated To be removed after %Cantera 3.2. Unused
     void checkPhaseArraySize(size_t mm) const;
 
     /**
@@ -211,14 +223,24 @@ public:
      *
      * If a -1 is returned, then the phase is not defined in the Kinetics
      * object.
+     * @deprecated  To be removed after %Cantera 3.2. Use 2-parameter version instead.
      */
-    size_t phaseIndex(const string& ph) const {
-        if (m_phaseindex.find(ph) == m_phaseindex.end()) {
-            return npos;
-        } else {
-            return m_phaseindex.at(ph) - 1;
-        }
-    }
+    size_t phaseIndex(const string& ph) const;
+
+    /**
+     * Return the index of a phase among the phases participating in this kinetic
+     * mechanism.
+     *
+     * @param ph string name of the phase
+     * @param raise  If `true`, raise exception if the specified phase is not defined
+     *      in the Kinetics object.
+     * @since Added the `raise` argument in %Cantera 3.2. If not specified, the default
+     *      behavior if a phase is not found in %Cantera 3.2 is to return `npos`.
+     *      After %Cantera 3.2, the default behavior will be to throw an exception.
+     * @exception Throws a CanteraError if the specified phase is not found and
+     *      `raise` is `true`.
+     */
+    size_t phaseIndex(const string& ph, bool raise) const;
 
     /**
      * Return pointer to phase where the reactions occur.
@@ -304,8 +326,25 @@ public:
      *   - If no match is found, the value -1 is returned.
      *
      * @param nm   Input string name of the species
+     * @deprecated  To be removed after %Cantera 3.2. Use 2-parameter version instead.
      */
     size_t kineticsSpeciesIndex(const string& nm) const;
+
+    /**
+     * Return the index of a species within the phases participating in this kinetic
+     * mechanism.
+     * This routine will look up a species number based on the input string `nm`. The
+     * lookup of species will occur for all phases listed in the Kinetics object.
+     * @param nm  Name of the species.
+     * @param raise  If `true`, raise exception if the specified species is not defined
+     *      in the Kinetics object.
+     * @since Added the `raise` argument in %Cantera 3.2. If not specified, the default
+     *      behavior if a phase is not found in %Cantera 3.2 is to return `npos`.
+     *      After %Cantera 3.2, the default behavior will be to throw an exception.
+     * @exception Throws a CanteraError if the specified species is not found and
+     *      `raise` is `true`.
+     */
+    size_t kineticsSpeciesIndex(const string& nm, bool raise) const;
 
     /**
      * This function looks up the name of a species and returns a

@@ -137,7 +137,8 @@ TEST_F(ConstructFromScratch, ignoreUndefinedElements)
     p.addSpecies(sCO2);
     ASSERT_EQ((size_t) 2, p.nSpecies());
     ASSERT_EQ((size_t) 2, p.nElements());
-    ASSERT_EQ(npos, p.speciesIndex("CO2"));
+    ASSERT_EQ(npos, p.speciesIndex("CO2", false));
+    ASSERT_THROW(p.speciesIndex("CO2", true), CanteraError);
 }
 
 TEST_F(ConstructFromScratch, addUndefinedElements)

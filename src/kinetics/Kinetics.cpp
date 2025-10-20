@@ -39,11 +39,12 @@ shared_ptr<Kinetics> Kinetics::clone(
     return newKinetics(phases, phaseNode, rootNode, phases[0]->root());
 }
 
-void Kinetics::checkReactionIndex(size_t i) const
+size_t Kinetics::checkReactionIndex(size_t i) const
 {
-    if (i >= nReactions()) {
-        throw IndexError("Kinetics::checkReactionIndex", "reactions", i, nReactions());
+    if (i < nReactions()) {
+        return i;
     }
+    throw IndexError("Kinetics::checkReactionIndex", "reactions", i, nReactions());
 }
 
 void Kinetics::resizeReactions()
@@ -65,23 +66,51 @@ void Kinetics::resizeReactions()
 
 void Kinetics::checkReactionArraySize(size_t ii) const
 {
+    warn_deprecated("Kinetics::checkReactionArraySize",
+        "To be removed after Cantera 3.2. Only used by legacy CLib.");
     if (nReactions() > ii) {
         throw ArraySizeError("Kinetics::checkReactionArraySize", ii,
                              nReactions());
     }
 }
 
-void Kinetics::checkPhaseIndex(size_t m) const
+size_t Kinetics::checkPhaseIndex(size_t m) const
 {
-    if (m >= nPhases()) {
-        throw IndexError("Kinetics::checkPhaseIndex", "phase", m, nPhases());
+    if (m < nPhases()) {
+        return m;
     }
+    throw IndexError("Kinetics::checkPhaseIndex", "phase", m, nPhases());
 }
 
 void Kinetics::checkPhaseArraySize(size_t mm) const
 {
+    warn_deprecated("Kinetics::checkPhaseArraySize",
+        "To be removed after Cantera 3.2. Unused.");
     if (nPhases() > mm) {
         throw ArraySizeError("Kinetics::checkPhaseArraySize", mm, nPhases());
+    }
+}
+
+size_t Kinetics::phaseIndex(const string& ph) const
+{
+    size_t ix = phaseIndex(ph, false);
+    if (ix == npos) {
+        warn_deprecated("Kinetics::phaseIndex", "'raise' argument not specified. "
+            "Default behavior will change from returning npos to throwing an "
+            "exception after Cantera 3.2.");
+    }
+    return ix;
+}
+
+size_t Kinetics::phaseIndex(const string& ph, bool raise) const
+{
+    if (m_phaseindex.find(ph) == m_phaseindex.end()) {
+        if (raise) {
+            throw CanteraError("Kinetics::phaseIndex", "Phase '{}' not found", ph);
+        }
+        return npos;
+    } else {
+        return m_phaseindex.at(ph) - 1;
     }
 }
 
@@ -90,15 +119,18 @@ shared_ptr<ThermoPhase> Kinetics::reactionPhase() const
     return m_thermo[0];
 }
 
-void Kinetics::checkSpeciesIndex(size_t k) const
+size_t Kinetics::checkSpeciesIndex(size_t k) const
 {
-    if (k >= m_kk) {
-        throw IndexError("Kinetics::checkSpeciesIndex", "species", k, m_kk);
+    if (k < m_kk) {
+        return k;
     }
+    throw IndexError("Kinetics::checkSpeciesIndex", "species", k, m_kk);
 }
 
 void Kinetics::checkSpeciesArraySize(size_t kk) const
 {
+    warn_deprecated("Kinetics::checkSpeciesArraySize",
+        "To be removed after Cantera 3.2. Only used by legacy CLib.");
     if (m_kk > kk) {
         throw ArraySizeError("Kinetics::checkSpeciesArraySize", kk, m_kk);
     }
@@ -312,12 +344,27 @@ string Kinetics::kineticsSpeciesName(size_t k) const
 
 size_t Kinetics::kineticsSpeciesIndex(const string& nm) const
 {
+    size_t ix = kineticsSpeciesIndex(nm, false);
+    if (ix == npos) {
+        warn_deprecated("Kinetics::kineticsSpeciesIndex", "'raise' argument not "
+            "specified. Default behavior will change from returning npos to throwing "
+            "an exception after Cantera 3.2.");
+    }
+    return ix;
+}
+
+size_t Kinetics::kineticsSpeciesIndex(const string& nm, bool raise) const
+{
     for (size_t n = 0; n < m_thermo.size(); n++) {
         // Check the ThermoPhase object for a match
-        size_t k = thermo(n).speciesIndex(nm);
+        size_t k = thermo(n).speciesIndex(nm, false);
         if (k != npos) {
             return k + m_start[n];
         }
+    }
+    if (raise) {
+        throw CanteraError("Kinetics::kineticsSpeciesIndex",
+            "Species '{}' not found", nm);
     }
     return npos;
 }
@@ -325,7 +372,7 @@ size_t Kinetics::kineticsSpeciesIndex(const string& nm) const
 ThermoPhase& Kinetics::speciesPhase(const string& nm)
 {
     for (size_t n = 0; n < m_thermo.size(); n++) {
-        size_t k = thermo(n).speciesIndex(nm);
+        size_t k = thermo(n).speciesIndex(nm, false);
         if (k != npos) {
             return thermo(n);
         }
@@ -336,7 +383,7 @@ ThermoPhase& Kinetics::speciesPhase(const string& nm)
 const ThermoPhase& Kinetics::speciesPhase(const string& nm) const
 {
     for (const auto& thermo : m_thermo) {
-        if (thermo->speciesIndex(nm) != npos) {
+        if (thermo->speciesIndex(nm, false) != npos) {
             return *thermo;
         }
     }

@@ -295,7 +295,7 @@ void Reaction::setParameters(const AnyMap& node, const Kinetics& kin)
     if (node.hasKey("orders")) {
         for (const auto& [name, order] : node["orders"].asMap<double>()) {
             orders[name] = order;
-            if (kin.kineticsSpeciesIndex(name) == npos) {
+            if (kin.kineticsSpeciesIndex(name, false) == npos) {
                 setValid(false);
             }
         }
@@ -620,7 +620,7 @@ void updateUndeclared(vector<string>& undeclared,
                       const Composition& comp, const Kinetics& kin)
 {
     for (const auto& [name, stoich]: comp) {
-        if (kin.kineticsSpeciesIndex(name) == npos) {
+        if (kin.kineticsSpeciesIndex(name, false) == npos) {
             undeclared.emplace_back(name);
         }
     }
@@ -633,7 +633,7 @@ void Reaction::checkBalance(const Kinetics& kin) const
     // iterate over products and reactants
     for (const auto& [name, stoich] : products) {
         const ThermoPhase& ph = kin.speciesPhase(name);
-        size_t k = ph.speciesIndex(name);
+        size_t k = ph.speciesIndex(name, true);
         for (size_t m = 0; m < ph.nElements(); m++) {
             balr[ph.elementName(m)] = 0.0; // so that balr contains all species
             balp[ph.elementName(m)] += stoich * ph.nAtoms(k, m);
@@ -641,7 +641,7 @@ void Reaction::checkBalance(const Kinetics& kin) const
     }
     for (const auto& [name, stoich] : reactants) {
         const ThermoPhase& ph = kin.speciesPhase(name);
-        size_t k = ph.speciesIndex(name);
+        size_t k = ph.speciesIndex(name, true);
         for (size_t m = 0; m < ph.nElements(); m++) {
             balr[ph.elementName(m)] += stoich * ph.nAtoms(k, m);
         }
@@ -674,13 +674,13 @@ void Reaction::checkBalance(const Kinetics& kin) const
     double prod_sites = 0.0;
     auto& surf = dynamic_cast<const SurfPhase&>(kin.thermo(0));
     for (const auto& [name, stoich] : reactants) {
-        size_t k = surf.speciesIndex(name);
+        size_t k = surf.speciesIndex(name, false);
         if (k != npos) {
             reac_sites += stoich * surf.size(k);
         }
     }
     for (const auto& [name, stoich] : products) {
-        size_t k = surf.speciesIndex(name);
+        size_t k = surf.speciesIndex(name, false);
         if (k != npos) {
             prod_sites += stoich * surf.size(k);
         }
@@ -746,7 +746,7 @@ bool Reaction::usesElectrochemistry(const Kinetics& kin) const
     for (const auto& [name, stoich] : products) {
         size_t kkin = kin.kineticsSpeciesIndex(name);
         size_t i = kin.speciesPhaseIndex(kkin);
-        size_t kphase = kin.thermo(i).speciesIndex(name);
+        size_t kphase = kin.thermo(i).speciesIndex(name, true);
         e_counter[i] += stoich * kin.thermo(i).charge(kphase);
     }
 
@@ -754,7 +754,7 @@ bool Reaction::usesElectrochemistry(const Kinetics& kin) const
     for (const auto& [name, stoich] : reactants) {
         size_t kkin = kin.kineticsSpeciesIndex(name);
         size_t i = kin.speciesPhaseIndex(kkin);
-        size_t kphase = kin.thermo(i).speciesIndex(name);
+        size_t kphase = kin.thermo(i).speciesIndex(name, true);
         e_counter[i] -= stoich * kin.thermo(i).charge(kphase);
     }
 
@@ -936,7 +936,7 @@ void parseReactionEquation(Reaction& R, const string& equation,
                     equation, tokens[i],
                     (last_used == npos) ? "n/a" : tokens[last_used]);
             }
-            if (!kin || (kin->kineticsSpeciesIndex(species) == npos
+            if (!kin || (kin->kineticsSpeciesIndex(species, false) == npos
                          && mass_action && species != "M"))
             {
                 R.setValid(false);
