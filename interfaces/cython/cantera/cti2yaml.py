@@ -11,30 +11,49 @@ accepts either the name of the CTI input file or a string containing the CTI
 content.
 """
 
-import sys
+from __future__ import annotations
+
 import re
-import pathlib
+import sys
 import textwrap
+from argparse import ArgumentParser
 from collections import OrderedDict
-import numpy as np
+from collections.abc import Sequence
 from email.utils import formatdate
-import argparse
-from ruamel import yaml
+from pathlib import Path
+from typing import Any, ClassVar, Literal, TypeAlias, TypedDict, overload
 
-# yaml.version_info is a tuple with the three parts of the version
-yaml_version = yaml.version_info
-# We choose ruamel.yaml 0.17.16 as the minimum version since it is the highest version
-# available in the Ubuntu 22.04 repositories.
-yaml_min_version = (0, 17, 16)
-if yaml_version < yaml_min_version:
-    raise RuntimeError(
-        "The minimum supported version of ruamel.yaml is 0.17.16. If you "
-        "installed ruamel.yaml from your operating system's package manager, "
-        "please install an updated version using pip or conda."
-    )
+from ._types import (
+    BlockMap,
+    CommentedMap,
+    CommentedSeq,
+    FlowList,
+    FlowMap,
+    MappingNode,
+    SafeRepresenter,
+    float2string,
+    literal_type_guard,
+    yaml,
+)
 
 
-def _printerr(*args):
+class _RkPure(TypedDict, total=False):
+    a: list[float] | tuple[float, float] | float
+    b: float
+
+
+_RkBinary: TypeAlias = dict[str, list[float] | tuple[float, float] | float]
+
+_CoverageParameters: TypeAlias = tuple[str | float, ...]
+_ReactionOptions: TypeAlias = Literal[
+    "duplicate", "negative_A", "negative_orders", "nonreactant_orders"
+]
+_PhaseOptions: TypeAlias = Literal[
+    "skip_undeclared_elements", "skip_undeclared_third_bodies"
+]
+
+
+def _printerr(*args: Any) -> None:
     # All debug and error output should go to stderr
     print(*args, file=sys.stderr)
 
@@ -43,130 +62,123 @@ class InputError(Exception):
     """
     Exception raised if an error is encountered while parsing the input file.
     """
-    def __init__(self, msg, *args):
+
+    def __init__(self, msg: str, *args: str) -> None:
         if args:
             msg = msg.format(*args)
         super().__init__(msg)
 
-BlockMap = yaml.comments.CommentedMap
 
-def FlowMap(*args, **kwargs):
-    m = yaml.comments.CommentedMap(*args, **kwargs)
-    m.fa.set_flow_style()
-    return m
-
-def FlowList(*args, **kwargs):
-    lst = yaml.comments.CommentedSeq(*args, **kwargs)
-    lst.fa.set_flow_style()
-    return lst
-
-def float2string(data):
-    if data == 0:
-        return '0.0'
-    elif 0.01 <= abs(data) < 10000:
-        return np.format_float_positional(data, trim='0')
-    else:
-        return np.format_float_scientific(data, trim='0')
-
-def represent_float(self, data):
-    if data != data:
-        value = '.nan'
-    elif data == self.inf_value:
-        value = '.inf'
-    elif data == -self.inf_value:
-        value = '-.inf'
-    else:
-        value = float2string(data)
-
-    return self.represent_scalar(u'tag:yaml.org,2002:float', value)
-
-yaml.RoundTripRepresenter.add_representer(float, represent_float)
-
-
-def applyUnits(value):
-    if isinstance(value, (float, int)):
+@overload
+def applyUnits(value: tuple[float, str] | str) -> str: ...
+@overload
+def applyUnits(value: float) -> float: ...
+def applyUnits(value: float | tuple[float, str] | str) -> float | str:
+    if isinstance(value, (float, int, str)):
         return value
-    else:
-        units = value[1]
-        units = re.sub(r'([A-Za-z])-([A-Za-z])', r'\1*\2', units)
-        units = re.sub(r'([A-Za-z])([-\d])', r'\1^\2', units)
-        return '{} {}'.format(float2string(value[0]), units)
+    units = value[1]
+    units = re.sub(r"([A-Za-z])-([A-Za-z])", r"\1*\2", units)
+    units = re.sub(r"([A-Za-z])([-\d])", r"\1^\2", units)
+    return "{} {}".format(float2string(value[0]), units)
 
 
 # map of old CTI/XML names to the new YAML names
 _newNames = {
-    'GasKinetics': 'gas',
-    'Interface': 'surface',
-    'Edge': 'edge',
-    'Mix': 'mixture-averaged',
-    'Multi': 'multicomponent',
-    'Ion': 'ionized-gas',
-    'molar_volume': 'species-molar-volume',
-    'solvent_volume': 'solvent-molar-volume',
-    'unity': 'unity'
+    "GasKinetics": "gas",
+    "Interface": "surface",
+    "Edge": "edge",
+    "Mix": "mixture-averaged",
+    "Multi": "multicomponent",
+    "Ion": "ionized-gas",
+    "molar_volume": "species-molar-volume",
+    "solvent_volume": "solvent-molar-volume",
+    "unity": "unity",
 }
+_OldKineticsModel: TypeAlias = Literal["GasKinetics", "Interface", "Edge"]
+_KineticsModel: TypeAlias = Literal["gas", "surface", "edge"]
+_OldTransportModel: TypeAlias = Literal["Mix", "Multi", "Ion"]
+_TransportModel: TypeAlias = Literal[
+    "mixture-averaged", "multicomponent", "ionized-gas"
+]
+_OldConcentrationBasis: TypeAlias = Literal["molar_volume", "molar_volume", "unity"]
+_ConcentrationBasis: TypeAlias = Literal[
+    "species-molar-volume", "solvent-molar-volume", "unity"
+]
 
 # constants that can be used in .cti files
-OneAtm = 1.01325e5
-OneBar = 1.0e5
+OneAtm: float = 1.01325e5
+OneBar: float = 1.0e5
 # Conversion from eV to J/kmol (electron charge * Avogadro constant)
-eV = 9.64853364595687e7
+eV: float = 9.64853364595687e7
 # Electron Mass in kg
-ElectronMass = 9.10938291e-31
+ElectronMass: float = 9.10938291e-31
 
 # default units
-_ulen = 'm'
-_umol = 'kmol'
-_umass = 'kg'
-_utime = 's'
-_ue = 'J/kmol'
-_uenergy = 'J'
-_upres = 'Pa'
+_ulen: str = "m"
+_umol: str = "kmol"
+_umass: str = "kg"
+_utime: str = "s"
+_ue: str = "J/kmol"
+_uenergy: str = "J"
+_upres: str = "Pa"
 
 # default std state pressure
-_pref = OneAtm
+_pref: float = OneAtm
 
-_name = 'noname'
+_name: str = "noname"
 
 # these lists store top-level entries
-_elements = []
-_species = []
-_speciesnames = []
-_phases = []
-_reactions = {'reactions': []}
+_elements: list[Element] = []
+_species: list[Species] = []
+_speciesnames: list[str] = []
+_phases: list[Phase] = []
+_reactions: dict[str, list[Reaction]] = {"reactions": []}
 
 # default for Motz & Wise correction
-_motz_wise = None
+_motz_wise: bool | None = None
 
-def enable_motz_wise():
+
+def enable_motz_wise() -> None:
     """
     Enable the Motz & Wise correction by default for all sticking reactions.
     """
     global _motz_wise
     _motz_wise = True
 
-def disable_motz_wise():
+
+def disable_motz_wise() -> None:
     """
     Disable the Motz & Wise correction by default for all sticking reactions.
     """
     global _motz_wise
     _motz_wise = False
 
-def validate(species = 'yes', reactions = 'yes'):
+
+def validate(species: str = "yes", reactions: str = "yes") -> None:
     pass
 
-def dataset(nm):
+
+def dataset(nm: str) -> None:
     "Set the dataset name. Invoke this to change the name of the YAML file."
     global _name
     _name = nm
 
-def standard_pressure(p0):
+
+def standard_pressure(p0: float) -> None:
     """Set the default standard-state pressure."""
     global _pref
     _pref = p0
 
-def units(length = '', quantity = '', mass = '', time = '',
-          act_energy = '', energy = '', pressure = ''):
+
+def units(
+    length: str = "",
+    quantity: str = "",
+    mass: str = "",
+    time: str = "",
+    act_energy: str = "",
+    energy: str = "",
+    pressure: str = "",
+) -> None:
     """
     Set the default units.
 
@@ -186,22 +198,36 @@ def units(length = '', quantity = '', mass = '', time = '',
         The default units for pressure. Default: ``'Pa'``
     """
     global _ulen, _umol, _ue, _utime, _umass, _uenergy, _upres
-    if length: _ulen = length
-    if quantity: _umol = quantity
-    if act_energy: _ue = act_energy
-    if time: _utime = time
-    if mass: _umass = mass
-    if energy: _uenergy = energy
-    if pressure: _upres = pressure
+    if length:
+        _ulen = length
+    if quantity:
+        _umol = quantity
+    if act_energy:
+        _ue = act_energy
+    if time:
+        _utime = time
+    if mass:
+        _umass = mass
+    if energy:
+        _uenergy = energy
+    if pressure:
+        _upres = pressure
 
 
-def get_composition(atoms):
-    if isinstance(atoms, dict): return atoms
+@overload
+def get_composition(atoms: str) -> OrderedDict[str, float]: ...
+@overload
+def get_composition(atoms: dict[str, float]) -> dict[str, float]: ...
+def get_composition(
+    atoms: dict[str, float] | str,
+) -> dict[str, float] | OrderedDict[str, float]:
+    if isinstance(atoms, dict):
+        return atoms
     a = atoms.replace(",", " ").replace(": ", ":")
     toks = a.split()
-    d = OrderedDict()
+    d: OrderedDict[str, float] = OrderedDict()
     for t in toks:
-        b = t.split(':')
+        b = t.split(":")
         try:
             d[b[0]] = int(b[1])
         except ValueError:
@@ -209,9 +235,19 @@ def get_composition(atoms):
     return d
 
 
-class element:
-    """ An atomic element or isotope. """
-    def __init__(self, symbol='', atomic_mass=0.01, atomic_number=None):
+class Element:
+    """An atomic element or isotope."""
+
+    symbol: str
+    atomic_weight: float
+    atomic_number: int | None
+
+    def __init__(
+        self,
+        symbol: str = "",
+        atomic_mass: float = 0.01,
+        atomic_number: int | None = None,
+    ):
         """
         :param symbol:
             The symbol for the element or isotope.
@@ -226,19 +262,37 @@ class element:
         _elements.append(self)
 
     @classmethod
-    def to_yaml(cls, representer, node):
-        out = BlockMap([('symbol', node.symbol),
-                        ('atomic-weight', node.atomic_weight)])
+    def to_yaml(cls, representer: SafeRepresenter, node: Element) -> MappingNode:
+        out = BlockMap([("symbol", node.symbol), ("atomic-weight", node.atomic_weight)])
         if node.atomic_number is not None:
-            out['atomic-number'] = node.atomic_number
+            out["atomic-number"] = node.atomic_number
         return representer.represent_dict(out)
 
 
-class species:
+class Species:
     """A constituent of a phase or interface."""
 
-    def __init__(self, name, atoms='', note = '', thermo=None, transport=None,
-                 charge=None, size=1.0, standardState=None):
+    name: str
+    atoms: OrderedDict[str, float]
+    size: float
+    comment: str
+    transport: GasTransport | None
+    standard_state: ConstantIncompressible | None
+    rk_pure: _RkPure
+    rk_binary: _RkBinary
+    density: float | str | None
+
+    def __init__(
+        self,
+        name: str,
+        atoms: str = "",
+        note: str = "",
+        thermo: Thermo | list[Thermo] | tuple[Thermo, ...] | None = None,
+        transport: GasTransport | Literal["None"] | None = None,
+        charge: float | None = None,
+        size: float = 1.0,
+        standardState: ConstantIncompressible | None = None,
+    ) -> None:
         """
         :param name:
             The species name (or formula). The name may be arbitrarily long,
@@ -279,54 +333,55 @@ class species:
         """
         self.name = name
         self.atoms = get_composition(atoms)
-        if charge is not None and 'E' not in self.atoms:
-            self.atoms['E'] = -charge
+        if charge is not None and "E" not in self.atoms:
+            self.atoms["E"] = -charge
         self.size = size
         self.comment = note
 
         if isinstance(thermo, (list, tuple)):
             if isinstance(thermo[0], (NASA, NASA9, Shomate)):
-                self.thermo = MultiPolyThermo(thermo)
+                self.thermo: Thermo = MultiPolyThermo(thermo)
         elif isinstance(thermo, (NASA, NASA9, Shomate)):
             self.thermo = MultiPolyThermo([thermo])
         elif thermo is not None:
             self.thermo = thermo
         else:
-            self.thermo = const_cp()
+            self.thermo = ConstCp()
 
         self.transport = None if transport == "None" else transport
         self.standard_state = standardState
 
-        self.rk_pure = {}
-        self.rk_binary = {}
+        self.rk_pure: _RkPure = {}
+        self.rk_binary: _RkBinary = {}
         self.density = None
 
         _species.append(self)
         _speciesnames.append(name)
 
     @classmethod
-    def to_yaml(cls, representer, node):
-        out = BlockMap([('name', node.name),
-                        ('composition', FlowMap(node.atoms.items()))])
+    def to_yaml(cls, representer: SafeRepresenter, node: Species) -> MappingNode:
+        out = BlockMap(
+            [("name", node.name), ("composition", FlowMap(node.atoms.items()))]
+        )
         if node.size != 1:
-            out['sites'] = node.size
-        out['thermo'] = node.thermo
+            out["sites"] = node.size
+        out["thermo"] = node.thermo
         if node.density:
-            out['equation-of-state'] = {
-                'model': 'constant-volume',
-                'density': applyUnits(node.density)
+            out["equation-of-state"] = {
+                "model": "constant-volume",
+                "density": applyUnits(node.density),
             }
 
         if node.rk_pure:
-            a = node.rk_pure['a']
+            a = node.rk_pure["a"]
             if isinstance(a, (tuple, list)):
                 a = FlowList([applyUnits(ai) for ai in a])
             else:
                 a = applyUnits(a)
-            out['equation-of-state'] = {
-                'model': 'Redlich-Kwong',
-                'a': a,
-                'b': applyUnits(node.rk_pure['b'])
+            out["equation-of-state"] = {
+                "model": "Redlich-Kwong",
+                "a": a,
+                "b": applyUnits(node.rk_pure["b"]),
             }
 
         if node.rk_binary:
@@ -336,41 +391,53 @@ class species:
                     rkbin[species] = FlowList([applyUnits(ai) for ai in a])
                 else:
                     rkbin[species] = applyUnits(a)
-            out['equation-of-state']['binary-a'] = rkbin
+            out["equation-of-state"]["binary-a"] = rkbin
 
         if node.standard_state:
-            out['equation-of-state'] = {
-                'model': 'constant-volume',
-                'molar-volume': applyUnits(node.standard_state.molar_volume)
+            out["equation-of-state"] = {
+                "model": "constant-volume",
+                "molar-volume": applyUnits(node.standard_state.molar_volume),
             }
 
         if node.transport:
-            out['transport'] = node.transport
+            out["transport"] = node.transport
         if node.comment:
-            comment = node.comment.split("\n")
+            comment: str | list[str] = node.comment.split("\n")
             comment = " ".join(c.strip() for c in comment)
-            out['note'] = comment
+            out["note"] = comment
         return representer.represent_dict(out)
 
 
-class thermo:
+class Thermo:
     """Base class for species thermodynamic properties."""
+
+    model: str
+    T_range: Sequence[float]
+    pref: float | None
+    coeffs: Sequence[float]
+
     @classmethod
-    def to_yaml(cls, representer, node):
+    def to_yaml(cls, representer: SafeRepresenter, node: Thermo) -> MappingNode:
         out = BlockMap()
         node.get_yaml(out)
         return representer.represent_dict(out)
 
-    def get_yaml(self, out):
-        out['model'] = self.model
+    def get_yaml(self, out: CommentedMap) -> None:
+        out["model"] = self.model
         pref = self.pref or _pref
         if pref != OneAtm:
-            out['reference-pressure'] = pref
+            out["reference-pressure"] = pref
 
 
-class NASA(thermo):
+class NASA(Thermo):
     """The 7-coefficient NASA polynomial parameterization."""
-    def __init__(self, Trange=(0.0, 0.0), coeffs=(), p0=None):
+
+    def __init__(
+        self,
+        Trange: Sequence[float] = (0.0, 0.0),
+        coeffs: Sequence[float] = (),
+        p0: float | None = None,
+    ):
         r"""
         :param Trange:
             The temperature range over which the parameterization is valid.
@@ -383,18 +450,23 @@ class NASA(thermo):
             the default value is used, which is set by the ``standard_pressure``
             directive.
         """
-        self.model = 'NASA7'
+        self.model = "NASA7"
         self.T_range = Trange
         self.pref = p0
         if len(coeffs) != 7:
-            raise InputError('NASA coefficient list must have length = 7')
+            raise InputError("NASA coefficient list must have length = 7")
         self.coeffs = coeffs
 
 
-class NASA9(thermo):
+class NASA9(Thermo):
     """NASA9 polynomial parameterization for a single temperature region."""
 
-    def __init__(self, Trange=(0.0, 0.0), coeffs=(), p0=None):
+    def __init__(
+        self,
+        Trange: Sequence[float] = (0.0, 0.0),
+        coeffs: Sequence[float] = (),
+        p0: float | None = None,
+    ) -> None:
         r"""
         :param Trange:
             The temperature range over which the parameterization is valid.
@@ -407,16 +479,16 @@ class NASA9(thermo):
             the default value is used, which is set by the ``standard_pressure``
             directive.
         """
-        self.model = 'NASA9'
+        self.model = "NASA9"
         self.T_range = Trange
         self.pref = p0
         if len(coeffs) != 9:
-            raise InputError('NASA9 coefficient list must have length = 9')
+            raise InputError("NASA9 coefficient list must have length = 9")
         self.coeffs = coeffs
 
 
-class MultiPolyThermo(thermo):
-    def __init__(self, regions):
+class MultiPolyThermo(Thermo):
+    def __init__(self, regions: Sequence[Thermo]) -> None:
         regions = sorted(regions, key=lambda r: r.T_range[0])
         self.pref = regions[0].pref
         self.Tranges = [regions[0].T_range[0]]
@@ -426,15 +498,21 @@ class MultiPolyThermo(thermo):
             self.Tranges.append(r.T_range[1])
             self.data.append(r.coeffs)
 
-    def get_yaml(self, out):
+    def get_yaml(self, out: CommentedMap) -> None:
         super().get_yaml(out)
-        out['temperature-ranges'] = FlowList(self.Tranges)
-        out['data'] = [FlowList(coeffs) for coeffs in self.data]
+        out["temperature-ranges"] = FlowList(self.Tranges)
+        out["data"] = [FlowList(coeffs) for coeffs in self.data]
 
 
-class Shomate(thermo):
+class Shomate(Thermo):
     """Shomate polynomial parameterization."""
-    def __init__(self, Trange=(0.0, 0.0), coeffs=(), p0=None):
+
+    def __init__(
+        self,
+        Trange: Sequence[float] = (0.0, 0.0),
+        coeffs: Sequence[float] = (),
+        p0: float | None = None,
+    ) -> None:
         r"""
         :param Trange:
             The temperature range over which the parameterization is valid.
@@ -446,19 +524,33 @@ class Shomate(thermo):
             The reference-state pressure, usually 1 atm or 1 bar. If omitted,
             the default value set by the ``standard_pressure`` directive is used.
         """
-        self.model = 'Shomate'
+        self.model = "Shomate"
         self.T_range = Trange
         self.pref = p0
         if len(coeffs) != 7:
-            raise InputError('Shomate coefficient list must have length = 7')
+            raise InputError("Shomate coefficient list must have length = 7")
         self.coeffs = coeffs
 
 
-class const_cp(thermo):
+class ConstCp(Thermo):
     """Constant specific heat."""
 
-    def __init__(self, t0=None, cp0=None, h0=None, s0=None, tmax=None,
-                 tmin=None):
+    t0: float | None
+    h0: float | None
+    s0: float | None
+    cp0: float | None
+    tmin: float | None
+    tmax: float | None
+
+    def __init__(
+        self,
+        t0: float | None = None,
+        cp0: float | None = None,
+        h0: float | None = None,
+        s0: float | None = None,
+        tmax: float | None = None,
+        tmin: float | None = None,
+    ) -> None:
         """
         :param t0:
             Temperature parameter T0. Default: 298.15 K.
@@ -469,7 +561,7 @@ class const_cp(thermo):
         :param s0:
             Reference-state molar entropy at temperature T0. Default: 0.0.
         """
-        self.model = 'constant-cp'
+        self.model = "constant-cp"
         self.pref = None
         self.t0 = t0
         self.h0 = h0
@@ -478,29 +570,49 @@ class const_cp(thermo):
         self.tmin = tmin
         self.tmax = tmax
 
-    def get_yaml(self, out):
+    def get_yaml(self, out: CommentedMap) -> None:
         super().get_yaml(out)
         if self.t0 is not None:
-            out['T0'] = applyUnits(self.t0)
+            out["T0"] = applyUnits(self.t0)
         if self.h0 is not None:
-            out['h0'] = applyUnits(self.h0)
+            out["h0"] = applyUnits(self.h0)
         if self.s0 is not None:
-            out['s0'] = applyUnits(self.s0)
+            out["s0"] = applyUnits(self.s0)
         if self.cp0 is not None:
-            out['cp0'] = applyUnits(self.cp0)
+            out["cp0"] = applyUnits(self.cp0)
         if self.tmin is not None:
-            out['T-min'] = applyUnits(self.tmin)
+            out["T-min"] = applyUnits(self.tmin)
         if self.tmax is not None:
-            out['T-max'] = applyUnits(self.tmax)
+            out["T-max"] = applyUnits(self.tmax)
 
 
-class gas_transport:
+class GasTransport:
     """
     Species-specific Transport coefficients for gas-phase transport models.
     """
-    def __init__(self, geom, diam, well_depth, dipole=0.0, polar=0.0,
-                 rot_relax=0.0, acentric_factor=None, disp_coeff=0.0,
-                 quad_polar=0.0):
+
+    geometry: Literal["atom", "linear", "nonlinear"]
+    diameter: float
+    well_depth: float
+    dipole: float
+    polarizability: float
+    rot_relax: float
+    acentric_factor: float | None
+    disp_coeff: float
+    quad_polar: float
+
+    def __init__(
+        self,
+        geom: Literal["atom", "linear", "nonlinear"],
+        diam: float,
+        well_depth: float,
+        dipole: float = 0.0,
+        polar: float = 0.0,
+        rot_relax: float = 0.0,
+        acentric_factor: float | None = None,
+        disp_coeff: float = 0.0,
+        quad_polar: float = 0.0,
+    ) -> None:
         """
         :param geom:
             A string specifying the molecular geometry. One of ``atom``,
@@ -537,28 +649,43 @@ class gas_transport:
         self.quad_polar = quad_polar
 
     @classmethod
-    def to_yaml(cls, representer, node):
-        out = BlockMap([('model', 'gas'),
-                        ('geometry', node.geometry),
-                        ('diameter', node.diameter),
-                        ('well-depth', node.well_depth)])
+    def to_yaml(cls, representer: SafeRepresenter, node: GasTransport) -> MappingNode:
+        out = BlockMap(
+            [
+                ("model", "gas"),
+                ("geometry", node.geometry),
+                ("diameter", node.diameter),
+                ("well-depth", node.well_depth),
+            ]
+        )
         if node.dipole:
-            out['dipole'] = node.dipole
+            out["dipole"] = node.dipole
         if node.polarizability:
-            out['polarizability'] = node.polarizability
+            out["polarizability"] = node.polarizability
         if node.rot_relax:
-            out['rotational-relaxation'] = node.rot_relax
+            out["rotational-relaxation"] = node.rot_relax
         if node.acentric_factor:
-            out['acentric-factor'] = node.acentric_factor
+            out["acentric-factor"] = node.acentric_factor
         if node.disp_coeff:
-            out['dispersion-coefficient'] = node.disp_coeff
+            out["dispersion-coefficient"] = node.disp_coeff
         if node.quad_polar:
-            out['quadrupole-polarizability'] = node.quad_polar
+            out["quadrupole-polarizability"] = node.quad_polar
         return representer.represent_dict(out)
 
 
 class Arrhenius:
-    def __init__(self, A=0.0, b=0.0, E=0.0, coverage=()):
+    A: float
+    b: float
+    E: float
+    coverage: list[_CoverageParameters] | None
+
+    def __init__(
+        self,
+        A: float = 0.0,
+        b: float = 0.0,
+        E: float = 0.0,
+        coverage: _CoverageParameters | list[_CoverageParameters] = (),
+    ) -> None:
         """
         :param A:
             The pre-exponential coefficient. Required input. If entered without
@@ -582,7 +709,7 @@ class Arrhenius:
         self.E = E
 
         if coverage:
-            if isinstance(coverage[0], str):
+            if not isinstance(coverage, list):
                 self.coverage = [coverage]
             else:
                 self.coverage = coverage
@@ -593,35 +720,58 @@ class Arrhenius:
             self.coverage = None
 
     @classmethod
-    def to_yaml(cls, representer, node):
-        out = FlowMap([('A', applyUnits(node.A)),
-                       ('b', applyUnits(node.b)),
-                       ('Ea', applyUnits(node.E))])
+    def to_yaml(cls, representer: SafeRepresenter, node: Arrhenius) -> MappingNode:
+        out: dict[str, float] = FlowMap(
+            [
+                ("A", applyUnits(node.A)),
+                ("b", applyUnits(node.b)),
+                ("Ea", applyUnits(node.E)),
+            ]
+        )
         return representer.represent_dict(out)
 
 
-class stick(Arrhenius):
+class Stick(Arrhenius):
     """
     A rate expression for a surface reaction given as a sticking probability,
     parameterized using a modified Arrhenius expression.
     """
-    def __init__(self, *args, **kwargs):
+
+    motz_wise: bool | None
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
         """
         :param motz_wise:
             ``True`` if the Motz & Wise correction should be used, ``False`` if
             not. If unspecified, use the mechanism default (set using the
             functions `enable_motz_wise` or `disable_motz_wise`).
         """
-        self.motz_wise = kwargs.pop('motz_wise', None)
+        self.motz_wise = kwargs.pop("motz_wise", None)
         Arrhenius.__init__(self, *args, **kwargs)
 
 
-class reaction:
+class Reaction:
     """
     A homogeneous chemical reaction with pressure-independent rate coefficient
     and mass-action kinetics.
     """
-    def __init__(self, equation, kf, id='', order='', options=()):
+
+    equation: str
+    order: dict[str, float] | OrderedDict[str, float]
+    number: int
+    id: str
+    options: Sequence[_ReactionOptions]
+    kf: Arrhenius | None
+    type: str
+
+    def __init__(
+        self,
+        equation: str,
+        kf: tuple[float, float, float] | Arrhenius | None,
+        id: str = "",
+        order: str = "",
+        options: _ReactionOptions | Sequence[_ReactionOptions] = (),
+    ) -> None:
         r"""
         :param equation:
             A string specifying the chemical equation.
@@ -643,49 +793,59 @@ class reaction:
         """
         self.equation = equation
         self.order = get_composition(order)
-        self.number = len(_reactions['reactions']) + 1
+        self.number = len(_reactions["reactions"]) + 1
         self.id = id
         self.options = [options] if isinstance(options, str) else options
-        self.kf = Arrhenius(*kf) if isinstance(kf, (list, tuple)) else kf
-        self.type = 'elementary'
-        _reactions['reactions'].append(self)
+        self.kf = Arrhenius(*kf) if isinstance(kf, tuple) else kf
+        self.type = "elementary"
+        _reactions["reactions"].append(self)
 
     @classmethod
-    def to_yaml(cls, representer, node):
+    def to_yaml(cls, representer: SafeRepresenter, node: Reaction) -> MappingNode:
         out = BlockMap()
         node.get_yaml(out)
         return representer.represent_dict(out)
 
-    def get_yaml(self, out):
-        out['equation'] = self.equation
-        out.yaml_add_eol_comment('Reaction {}'.format(self.number), 'equation')
-        if self.type not in ('elementary', 'edge', 'surface'):
-            out['type'] = self.type
+    def get_yaml(self, out: CommentedMap) -> None:
+        out["equation"] = self.equation
+        out.yaml_add_eol_comment("Reaction {}".format(self.number), "equation")
+        if self.type not in ("elementary", "edge", "surface"):
+            out["type"] = self.type
 
         if self.id:
-            out['id'] = self.id
+            out["id"] = self.id
 
-        if self.type in ('elementary', 'three-body', 'edge', 'surface'):
-            out['rate-constant'] = self.kf
+        if self.type in ("elementary", "three-body", "edge", "surface"):
+            out["rate-constant"] = self.kf
 
-        if 'duplicate' in self.options:
-            out['duplicate'] = True
-        if 'negative_A' in self.options:
-            out['negative-A'] = True
+        if "duplicate" in self.options:
+            out["duplicate"] = True
+        if "negative_A" in self.options:
+            out["negative-A"] = True
 
         if self.order:
-            out['orders'] = FlowMap(self.order.items())
-        if 'negative_orders' in self.options:
-            out['negative-orders'] = True
-        if 'nonreactant_orders' in self.options:
-            out['nonreactant-orders'] = True
+            out["orders"] = FlowMap(self.order.items())
+        if "negative_orders" in self.options:
+            out["negative-orders"] = True
+        if "nonreactant_orders" in self.options:
+            out["nonreactant-orders"] = True
 
 
-class three_body_reaction(reaction):
+class ThreeBodyReaction(Reaction):
     """
     A three-body reaction.
     """
-    def __init__(self, equation, kf, efficiencies='', id='', options=()):
+
+    efficiencies: dict[str, float] | OrderedDict[str, float]
+
+    def __init__(
+        self,
+        equation: str,
+        kf: tuple[float, float, float] | Arrhenius,
+        efficiencies: str = "",
+        id: str = "",
+        options: _ReactionOptions | Sequence[_ReactionOptions] = (),
+    ) -> None:
         """
         :param equation:
             A string specifying the chemical equation. The reaction can be
@@ -703,42 +863,144 @@ class three_body_reaction(reaction):
         :param options: Processing options, as described in
             `Options <https://github.com/Cantera/cantera-website/blob/v2.6.0/pages/tutorials/cti/reactions.rst#options>`__.
         """
-        super().__init__(equation, kf, id, '', options)
-        self.type = 'three-body'
+        super().__init__(equation, kf, id, "", options)
+        self.type = "three-body"
         self.efficiencies = get_composition(efficiencies)
 
-    def get_yaml(self, out):
+    def get_yaml(self, out: CommentedMap) -> None:
         super().get_yaml(out)
         if self.efficiencies:
-            out['efficiencies'] = FlowMap(self.efficiencies)
+            out["efficiencies"] = FlowMap(self.efficiencies)
 
 
-class falloff_base(reaction):
-    """ Base class for falloff_reaction and chemically_activated_reaction """
-    def __init__(self, equation, klow, khigh, efficiencies, falloff, id, options):
-        super().__init__(equation, None, id, '', options)
+# Falloff parameterizations
+class Troe:
+    """The Troe falloff function."""
+
+    A: float
+    T3: float
+    T1: float
+    T2: float | None
+
+    def __init__(
+        self,
+        A: float = 0.0,
+        T3: float = 0.0,
+        T1: float = 0.0,
+        T2: float | None = None,
+    ) -> None:
+        """
+        Parameters: *A*, *T3*, *T1*, *T2*. These must be entered as pure
+        numbers with no attached dimensions.
+        """
+        self.A = A
+        self.T3 = T3
+        self.T1 = T1
+        self.T2 = T2
+
+    def get_yaml(self, out: CommentedMap) -> None:
+        troe = FlowMap([("A", self.A), ("T3", self.T3), ("T1", self.T1)])
+        if self.T2 is not None:
+            troe["T2"] = self.T2
+        out["Troe"] = troe
+
+
+class SRI:
+    """The SRI falloff function."""
+
+    A: float
+    B: float
+    C: float
+    D: float | None
+    E: float | None
+
+    def __init__(
+        self,
+        A: float = 0.0,
+        B: float = 0.0,
+        C: float = 0.0,
+        D: float | None = None,
+        E: float | None = None,
+    ) -> None:
+        """
+        Parameters: *A*, *B*, *C*, *D*, *E*. These must be entered as
+        pure numbers without attached dimensions.
+        """
+        self.A = A
+        self.B = B
+        self.C = C
+        self.D = D
+        self.E = E
+
+    def get_yaml(self, out: CommentedMap) -> None:
+        sri = FlowMap([("A", self.A), ("B", self.B), ("C", self.C)])
+        if self.D is not None:
+            sri["D"] = self.D
+        if self.E is not None:
+            sri["E"] = self.E
+        out["SRI"] = sri
+
+
+class Lindemann:
+    """The Lindemann falloff function."""
+
+    def get_yaml(self, out: CommentedMap) -> None:
+        pass
+
+
+_FalloffFunction: TypeAlias = Troe | SRI | Lindemann
+
+
+class FalloffBase(Reaction):
+    """Base class for falloff_reaction and chemically_activated_reaction"""
+
+    k_low: Arrhenius
+    k_high: Arrhenius
+    falloff: _FalloffFunction | None
+    efficiencies: dict[str, float] | OrderedDict[str, float]
+
+    def __init__(
+        self,
+        equation: str,
+        klow: tuple[float, float, float] | Arrhenius,
+        khigh: tuple[float, float, float] | Arrhenius,
+        efficiencies: str,
+        falloff: _FalloffFunction | None,
+        id: str,
+        options: _ReactionOptions | Sequence[_ReactionOptions],
+    ) -> None:
+        super().__init__(equation, None, id, "", options)
         self.k_low = Arrhenius(*klow) if isinstance(klow, (list, tuple)) else klow
         self.k_high = Arrhenius(*khigh) if isinstance(khigh, (list, tuple)) else khigh
         self.falloff = falloff
         self.efficiencies = get_composition(efficiencies)
 
-    def get_yaml(self, out):
+    def get_yaml(self, out: CommentedMap) -> None:
         super().get_yaml(out)
 
-        out['low-P-rate-constant'] = self.k_low
-        out['high-P-rate-constant'] = self.k_high
+        out["low-P-rate-constant"] = self.k_low
+        out["high-P-rate-constant"] = self.k_high
 
         if self.falloff:
             self.falloff.get_yaml(out)
 
         if self.efficiencies:
-            out['efficiencies'] = FlowMap(self.efficiencies)
+            out["efficiencies"] = FlowMap(self.efficiencies)
 
 
-class falloff_reaction(falloff_base):
-    """ A gas-phase falloff reaction. """
-    def __init__(self, equation, kf0, kf, efficiencies='', falloff=None, id='',
-                 options=()):
+class FalloffReaction(FalloffBase):
+    """A gas-phase falloff reaction."""
+
+    def __init__(
+        self,
+        equation: str,
+        kf0: tuple[float, float, float] | Arrhenius,
+        kf: tuple[float, float, float] | Arrhenius,
+        efficiencies: str = "",
+        falloff: _FalloffFunction | None = None,
+        id: str = "",
+        options: _ReactionOptions | Sequence[_ReactionOptions] = (),
+    ) -> None:
         """
         :param equation:
             A string specifying the chemical equation.
@@ -763,14 +1025,22 @@ class falloff_reaction(falloff_base):
             `Options <https://github.com/Cantera/cantera-website/blob/v2.6.0/pages/tutorials/cti/reactions.rst#options>`__.
         """
         super().__init__(equation, kf0, kf, efficiencies, falloff, id, options)
-        self.type = 'falloff'
+        self.type = "falloff"
 
 
-class chemically_activated_reaction(falloff_base):
-    """ A gas-phase, chemically activated reaction. """
+class ChemicallyActivatedReaction(FalloffBase):
+    """A gas-phase, chemically activated reaction."""
 
-    def __init__(self, equation, kLow, kHigh,
-                 efficiencies='', falloff=None, id='', options=()):
+    def __init__(
+        self,
+        equation: str,
+        kLow: tuple[float, float, float] | Arrhenius,
+        kHigh: tuple[float, float, float] | Arrhenius,
+        efficiencies: str = "",
+        falloff: _FalloffFunction | None = None,
+        id: str = "",
+        options: _ReactionOptions | Sequence[_ReactionOptions] = (),
+    ) -> None:
         """
         :param equation:
             A string specifying the chemical equation.
@@ -794,17 +1064,19 @@ class chemically_activated_reaction(falloff_base):
             Processing options, as described in
             `Options <https://github.com/Cantera/cantera-website/blob/v2.6.0/pages/tutorials/cti/reactions.rst#options>`__.
         """
-        super().__init__(equation, kLow, kHigh, efficiencies, falloff, id,
-                         options)
-        self.type = 'chemically-activated'
+        super().__init__(equation, kLow, kHigh, efficiencies, falloff, id, options)
+        self.type = "chemically-activated"
 
 
-class pdep_arrhenius(reaction):
+class PdepArrhenius(Reaction):
     """
     Pressure-dependent rate calculated by interpolating between Arrhenius
     expressions at different pressures.
     """
-    def __init__(self, equation, *args, **kwargs):
+
+    arrhenius: tuple[Sequence[float], ...]
+
+    def __init__(self, equation: str, *args: Sequence[float], **kwargs: Any) -> None:
         """
         :param equation:
             A string specifying the chemical equation.
@@ -817,26 +1089,47 @@ class pdep_arrhenius(reaction):
         """
         super().__init__(equation, None, **kwargs)
         self.arrhenius = args
-        self.type = 'pressure-dependent-Arrhenius'
+        self.type = "pressure-dependent-Arrhenius"
 
-    def get_yaml(self, out):
+    def get_yaml(self, out: CommentedMap) -> None:
         super().get_yaml(out)
         rates = []
         for p, A, b, Ea in self.arrhenius:
-            rates.append(FlowMap([('P', applyUnits(p)),
-                                 ('A', applyUnits(A)),
-                                 ('b', applyUnits(b)),
-                                 ('Ea', applyUnits(Ea))]))
-        out['rate-constants'] = rates
+            rates.append(
+                FlowMap(
+                    [
+                        ("P", applyUnits(p)),
+                        ("A", applyUnits(A)),
+                        ("b", applyUnits(b)),
+                        ("Ea", applyUnits(Ea)),
+                    ]
+                )
+            )
+        out["rate-constants"] = rates
 
 
-class chebyshev_reaction(reaction):
+class ChebyshevReaction(Reaction):
     """
     Pressure-dependent rate calculated in terms of a bivariate Chebyshev
     polynomial.
     """
-    def __init__(self, equation, Tmin=300.0, Tmax=2500.0, Pmin=(0.001, 'atm'),
-                 Pmax=(100.0, 'atm'), coeffs=(), **kwargs):
+
+    Pmin: tuple[float, str]
+    Pmax: tuple[float, str]
+    Tmin: float
+    Tmax: float
+    coeffs: Sequence[Sequence[float]]
+
+    def __init__(
+        self,
+        equation: str,
+        Tmin: float = 300.0,
+        Tmax: float = 2500.0,
+        Pmin: tuple[float, str] = (0.001, "atm"),
+        Pmax: tuple[float, str] = (100.0, "atm"),
+        coeffs: Sequence[Sequence[float]] = (),
+        **kwargs: Any,
+    ) -> None:
         """
         :param equation:
             A string specifying the chemical equation.
@@ -859,29 +1152,42 @@ class chebyshev_reaction(reaction):
         # Remove deprecated '(+M)' third body notation
         equation = re.sub(r" *\( *\+ *M *\)", "", equation)
         super().__init__(equation, None, **kwargs)
-        self.type = 'Chebyshev'
+        self.type = "Chebyshev"
         self.Pmin = Pmin
         self.Pmax = Pmax
         self.Tmin = Tmin
         self.Tmax = Tmax
         self.coeffs = coeffs
 
-    def get_yaml(self, out):
+    def get_yaml(self, out: CommentedMap) -> None:
         super().get_yaml(out)
-        out['temperature-range'] = FlowList([applyUnits(self.Tmin),
-                                             applyUnits(self.Tmax)])
-        out['pressure-range'] = FlowList([applyUnits(self.Pmin),
-                                          applyUnits(self.Pmax)])
-        out['data'] = [FlowList(line) for line in self.coeffs]
+        out["temperature-range"] = FlowList(
+            [applyUnits(self.Tmin), applyUnits(self.Tmax)]
+        )
+        out["pressure-range"] = FlowList([applyUnits(self.Pmin), applyUnits(self.Pmax)])
+        out["data"] = [FlowList(line) for line in self.coeffs]
 
 
-class surface_reaction(reaction):
+class SurfaceReaction(Reaction):
     """
     A heterogeneous chemical reaction with pressure-independent rate
     coefficient and mass-action kinetics.
     """
-    def __init__(self, equation, kf, id='', order='', beta=None, options=(),
-                 rate_coeff_type=''):
+
+    sticking: bool
+    beta: float | None
+    rate_coeff_type: Literal["", "exchangecurrentdensity"]
+
+    def __init__(
+        self,
+        equation: str,
+        kf: tuple[float, float, float] | Arrhenius,
+        id: str = "",
+        order: str = "",
+        beta: float | None = None,
+        options: _ReactionOptions | Sequence[_ReactionOptions] = (),
+        rate_coeff_type: Literal["", "exchangecurrentdensity"] = "",
+    ) -> None:
         """
         :param equation:
             A string specifying the chemical equation.
@@ -902,44 +1208,72 @@ class surface_reaction(reaction):
             `Options <https://github.com/Cantera/cantera-website/blob/v2.6.0/pages/tutorials/cti/reactions.rst#options>`__.
         """
         super().__init__(equation, kf, id, order, options)
-        self.type = 'surface'
-        self.sticking = isinstance(kf, stick)
+        self.type = "surface"
+        self.sticking = isinstance(kf, Stick)
         self.beta = beta
         self.rate_coeff_type = rate_coeff_type
 
-    def get_yaml(self, out):
+    def get_yaml(self, out: CommentedMap) -> None:
         super().get_yaml(out)
+        assert self.kf is not None
         if self.sticking:
-            del out['rate-constant']
-            out.insert(1, 'sticking-coefficient', self.kf)
+            assert isinstance(self.kf, Stick)
+            del out["rate-constant"]
+            out.insert(1, "sticking-coefficient", self.kf)
             if self.kf.motz_wise is not None:
-                out['Motz-Wise'] = self.kf.motz_wise
-        if self.rate_coeff_type == 'exchangecurrentdensity':
-            out['exchange-current-density-formulation'] = True
+                out["Motz-Wise"] = self.kf.motz_wise
+        if self.rate_coeff_type == "exchangecurrentdensity":
+            out["exchange-current-density-formulation"] = True
 
         if self.kf.coverage is not None:
-            cov = {c[0]: FlowMap([('a', c[1]), ('m', c[2]), ('E', c[3])])
-                   for c in self.kf.coverage}
-            out['coverage-dependencies'] = cov
+            cov = {
+                c[0]: FlowMap([("a", c[1]), ("m", c[2]), ("E", c[3])])
+                for c in self.kf.coverage
+            }
+            out["coverage-dependencies"] = cov
         if self.beta is not None:
-            out['beta'] = self.beta
+            out["beta"] = self.beta
 
 
-class edge_reaction(surface_reaction):
-    def __init__(self, equation, kf, id='', order='', beta=None, options=(),
-                 rate_coeff_type=''):
+class EdgeReaction(SurfaceReaction):
+    def __init__(
+        self,
+        equation: str,
+        kf: tuple[float, float, float] | Arrhenius,
+        id: str = "",
+        order: str = "",
+        beta: float | None = None,
+        options: _ReactionOptions | Sequence[_ReactionOptions] = (),
+        rate_coeff_type: Literal["", "exchangecurrentdensity"] = "",
+    ) -> None:
         super().__init__(equation, kf, id, order, beta, options, rate_coeff_type)
-        self.type = 'edge'
+        self.type = "edge"
 
 
-class state:
+class State:
     """
     An embedded entry that specifies the thermodynamic state of a phase
     or interface.
     """
-    def __init__(self, temperature=None, pressure=None, mole_fractions=None,
-                 mass_fractions=None, density=None, coverages=None,
-                 solute_molalities=None):
+
+    t: float | None
+    rho: float | None
+    p: float | None
+    X: str | None
+    Y: str | None
+    coverages: str | None
+    molalities: str | None
+
+    def __init__(
+        self,
+        temperature: float | None = None,
+        pressure: float | None = None,
+        mole_fractions: str | None = None,
+        mass_fractions: str | None = None,
+        density: float | None = None,
+        coverages: str | None = None,
+        solute_molalities: str | None = None,
+    ) -> None:
         """
         :param temperature:
             The temperature.
@@ -970,30 +1304,49 @@ class state:
         self.molalities = solute_molalities
 
     @classmethod
-    def to_yaml(cls, representer, node):
+    def to_yaml(cls, representer: SafeRepresenter, node: State) -> MappingNode:
         out = BlockMap()
         if node.t is not None:
-            out['T'] = applyUnits(node.t)
+            out["T"] = applyUnits(node.t)
         if node.p is not None:
-            out['P'] = applyUnits(node.p)
+            out["P"] = applyUnits(node.p)
         if node.rho is not None:
-            out['density'] = applyUnits(node.rho)
+            out["density"] = applyUnits(node.rho)
         if node.X is not None:
-            out['X'] = FlowMap(get_composition(node.X).items())
+            out["X"] = FlowMap(get_composition(node.X).items())
         if node.Y is not None:
-            out['Y'] = FlowMap(get_composition(node.Y).items())
+            out["Y"] = FlowMap(get_composition(node.Y).items())
         if node.coverages is not None:
-            out['coverages'] = FlowMap(get_composition(node.coverages).items())
+            out["coverages"] = FlowMap(get_composition(node.coverages).items())
         if node.molalities is not None:
-            out['molalities'] = FlowMap(get_composition(node.molalities).items())
+            out["molalities"] = FlowMap(get_composition(node.molalities).items())
         return representer.represent_dict(out)
 
 
-class phase:
+class Phase:
     """Base class for phases of matter."""
 
-    def __init__(self, name='', elements='', species='', note='',
-                 reactions='none', initial_state=None, options=()):
+    name: str
+    elements: str
+    species: list[tuple[str, list[str] | str]]
+    reactions: list[list[str]]
+    thermo_model: str | None
+    kinetics: _OldKineticsModel | None
+    transport: _OldTransportModel | None
+    comment: str
+    options: Sequence[_PhaseOptions]
+    initial_state: State | None
+
+    def __init__(
+        self,
+        name: str = "",
+        elements: str = "",
+        species: str | Sequence[str] = "",
+        note: str = "",
+        reactions: str | Sequence[str] = "none",
+        initial_state: State | None = None,
+        options: _PhaseOptions | Sequence[_PhaseOptions] = (),
+    ) -> None:
         """
         :param name:
             A string to identify the phase. Must be unique among the phase
@@ -1028,9 +1381,9 @@ class phase:
         self.comment = note
         self.options = [options] if isinstance(options, str) else options
 
-        #--------------------------------
+        # --------------------------------
         #        process species
-        #--------------------------------
+        # --------------------------------
 
         # if a single string is entered, make it a list
         if isinstance(species, str):
@@ -1043,22 +1396,23 @@ class phase:
             foundColon = False
             allLocal = True
             for token in sp.split():
-                if ':' in sp:
+                if ":" in sp:
                     foundColon = True
                 if token not in _speciesnames:
                     allLocal = False
 
             if foundColon and not allLocal:
-                icolon = sp.find(':')
+                icolon = sp.find(":")
                 datasrc = sp[:icolon].strip()
-                spnames = sp[icolon+1:].strip()
-                if spnames != 'all':
+                spnames: str | list[str] = sp[icolon + 1 :].strip()
+                if spnames != "all":
+                    assert isinstance(spnames, str)
                     spnames = FlowList(spnames.split())
-                self.species.append((datasrc + '.yaml/species', spnames))
+                self.species.append((datasrc + ".yaml/species", spnames))
 
             else:
                 spnames = sp
-                self.species.append(('species', FlowList(spnames.split())))
+                self.species.append(("species", FlowList(spnames.split())))
 
         if isinstance(reactions, str):
             reactions = [reactions]
@@ -1067,22 +1421,24 @@ class phase:
         # are imported or defined locally. If imported, the string
         # contains a colon (:)
         for r in reactions:
-            icolon = r.find(':')
+            icolon = r.find(":")
             if icolon > 0:
-                datasrc = r[:icolon].strip() + '.yaml/reactions'
-                rnum = r[icolon+1:].strip()
+                datasrc = r[:icolon].strip() + ".yaml/reactions"
+                rnum = r[icolon + 1 :].strip()
             else:
-                datasrc = 'reactions'
+                datasrc = "reactions"
                 rnum = r.strip()
-            if rnum == 'all' and 'skip_undeclared_species' in self.options:
-                rnum = 'declared-species'
-            if rnum != 'none':
+            if rnum == "all" and "skip_undeclared_species" in self.options:
+                rnum = "declared-species"
+            if rnum != "none":
                 self.reactions.append([datasrc, rnum])
             if rnum.lower() in ("all", "declared-species", "none"):
                 continue
             if datasrc != "reactions":
-                _printerr("WARNING: Reaction id-pattern matching from remote"
-                    " files not supported ({}: {})".format(datasrc, rnum))
+                _printerr(
+                    "WARNING: Reaction id-pattern matching from remote"
+                    " files not supported ({}: {})".format(datasrc, rnum)
+                )
 
         self.initial_state = initial_state
 
@@ -1090,28 +1446,28 @@ class phase:
         _phases.append(self)
 
     @classmethod
-    def to_yaml(cls, representer, node):
+    def to_yaml(cls, representer: SafeRepresenter, node: Phase) -> MappingNode:
         out = BlockMap()
         node.get_yaml(out)
         return representer.represent_dict(out)
 
-    def get_yaml(self, out):
-        out['name'] = self.name
-        out['thermo'] = self.thermo_model
+    def get_yaml(self, out: CommentedMap) -> None:
+        out["name"] = self.name
+        out["thermo"] = self.thermo_model
         if self.elements:
-            out['elements'] = FlowList(self.elements.split())
+            out["elements"] = FlowList(self.elements.split())
 
-        if len(self.species) == 1 and self.species[0][0] == 'species':
+        if len(self.species) == 1 and self.species[0][0] == "species":
             # all local species
-            out['species'] = self.species[0][1]
+            out["species"] = self.species[0][1]
         else:
-            out['species'] = [BlockMap([(sp[0], sp[1])]) for sp in self.species]
+            out["species"] = [BlockMap([(sp[0], sp[1])]) for sp in self.species]
 
-        if 'skip_undeclared_elements' in self.options:
-            out['skip-undeclared-elements'] = True
+        if "skip_undeclared_elements" in self.options:
+            out["skip-undeclared-elements"] = True
 
-        if 'skip_undeclared_third_bodies' in self.options:
-            out['skip-undeclared-third-bodies'] = True
+        if "skip_undeclared_third_bodies" in self.options:
+            out["skip-undeclared-third-bodies"] = True
 
         # Convert reaction pattern matching to use of multiple reaction sections
         for i in range(len(self.reactions)):
@@ -1129,7 +1485,7 @@ class phase:
 
             misses = []
             hits = []
-            for reaction in _reactions['reactions']:
+            for reaction in _reactions["reactions"]:
                 if reaction.id == spec:
                     # exact match (single reaction is specified)
                     hits.append(reaction)
@@ -1140,44 +1496,60 @@ class phase:
                     misses.append(reaction)
 
             if not hits:
-                _printerr("WARNING: Unable to generate field '{}'\nfrom reaction "
-                          "specification '{}' ".format(name, self.reactions[i][1]))
+                _printerr(
+                    "WARNING: Unable to generate field '{}'\nfrom reaction "
+                    "specification '{}' ".format(name, self.reactions[i][1])
+                )
 
             _reactions[name] = hits
             _reactions["reactions"] = misses
             self.reactions[i] = [name, "all"]
 
         if self.kinetics:
-            out['kinetics'] = _newNames[self.kinetics]
+            out["kinetics"] = _newNames[self.kinetics]
             if self.reactions:
-                if len(self.reactions) == 1 and self.reactions[0][0] == 'reactions':
-                    if _reactions['reactions']:
-                        out['reactions'] = self.reactions[0][1]
+                if len(self.reactions) == 1 and self.reactions[0][0] == "reactions":
+                    if _reactions["reactions"]:
+                        out["reactions"] = self.reactions[0][1]
                     else:
-                        out['reactions'] = 'none'
-                elif all(r[1] == 'all' for r in self.reactions):
-                    out['reactions'] = FlowList(r[0] for r in self.reactions)
+                        out["reactions"] = "none"
+                elif all(r[1] == "all" for r in self.reactions):
+                    out["reactions"] = FlowList(r[0] for r in self.reactions)
                 else:
-                    out['reactions'] = [BlockMap([(r[0], r[1])])
-                                        for r in self.reactions]
+                    out["reactions"] = [
+                        BlockMap([(r[0], r[1])]) for r in self.reactions
+                    ]
             else:
                 out["reactions"] = "none"
 
         if self.transport:
-            out['transport'] = _newNames[self.transport]
+            out["transport"] = _newNames[self.transport]
 
         if self.comment:
-            out['note'] = self.comment
+            out["note"] = self.comment
 
         if self.initial_state:
-            out['state'] = self.initial_state
+            out["state"] = self.initial_state
 
 
-class ideal_gas(phase):
+class IdealGas(Phase):
     """An ideal gas mixture."""
-    def __init__(self, name='', elements='', species='', note='',
-                 reactions='none', kinetics='GasKinetics', transport=None,
-                 initial_state=None, options=()):
+
+    kinetics: _OldKineticsModel | None
+    transport: _OldTransportModel | None
+
+    def __init__(
+        self,
+        name: str = "",
+        elements: str = "",
+        species: str | Sequence[str] = "",
+        note: str = "",
+        reactions: str | Sequence[str] = "none",
+        kinetics: _OldKineticsModel | Literal["None"] = "GasKinetics",
+        transport: _OldTransportModel | Literal["None"] | None = None,
+        initial_state: State | None = None,
+        options: _PhaseOptions | Sequence[_PhaseOptions] = (),
+    ) -> None:
         """
         The parameters correspond to those of :class:`phase`, with the
         following modifications:
@@ -1191,153 +1563,229 @@ class ideal_gas(phase):
             ``'multi'``, or ``'mix'``. Default: ``'none'``.
         """
 
-        phase.__init__(self, name, elements, species, note, reactions,
-                       initial_state, options)
+        Phase.__init__(
+            self, name, elements, species, note, reactions, initial_state, options
+        )
         self.kinetics = None if kinetics == "None" else kinetics
         self.transport = None if transport == "None" else transport
-        self.thermo_model = 'ideal-gas'
+        self.thermo_model = "ideal-gas"
 
 
-class stoichiometric_solid(phase):
+class StoichiometricSolid(Phase):
     """
     A solid compound or pure element. Stoichiometric solid phases contain
     exactly one species, which always has unit activity. The solid is assumed
     to have constant density. Therefore the rates of reactions involving these
     phases do not contain any concentration terms for the (one) species in the
     phase, since the concentration is always the same."""
-    def __init__(self, name='', elements='', species='', note='', density=None,
-                 transport='None', initial_state=None, options=()):
+
+    density: float
+    transport: _OldTransportModel | None
+
+    def __init__(
+        self,
+        name: str = "",
+        elements: str = "",
+        species: str | Sequence[str] = "",
+        note: str = "",
+        density: float | None = None,
+        transport: _OldTransportModel | Literal["None"] = "None",
+        initial_state: State | None = None,
+        options: _PhaseOptions | Sequence[_PhaseOptions] = (),
+    ) -> None:
         """
         See :class:`phase` for descriptions of the parameters.
         """
 
-        phase.__init__(self, name, elements, species, note, 'none',
-                       initial_state, options)
-        self.thermo_model = 'fixed-stoichiometry'
+        Phase.__init__(
+            self, name, elements, species, note, "none", initial_state, options
+        )
+        self.thermo_model = "fixed-stoichiometry"
+        if density is None:
+            raise InputError("density must be specified.")
         self.density = density
-        if self.density is None:
-            raise InputError('density must be specified.')
         self.transport = None if transport == "None" else transport
 
-    def get_yaml(self, out):
+    def get_yaml(self, out: CommentedMap) -> None:
         super().get_yaml(out)
         for section, names in self.species:
-            if section != 'species':
-                out['density'] = applyUnits(self.density)
+            if section != "species":
+                out["density"] = applyUnits(self.density)
             else:
                 species = [S for S in _species if S.name == names[0]][0]
                 species.density = self.density
 
 
-class stoichiometric_liquid(stoichiometric_solid):
+class StoichiometricLiquid(StoichiometricSolid):
     """
     An incompressible stoichiometric liquid. Currently, there is no
     distinction between stoichiometric liquids and solids.
     """
 
 
-class metal(phase):
+class Metal(Phase):
     """A metal."""
-    def __init__(self, name='', elements='', species='', note='', density=-1.0,
-                 transport='None', initial_state=None, options=()):
 
-        phase.__init__(self, name, elements, species, note, 'none',
-                       initial_state, options)
-        self.thermo_model = 'electron-cloud'
+    density: float
+
+    def __init__(
+        self,
+        name: str = "",
+        elements: str = "",
+        species: str | Sequence[str] = "",
+        note: str = "",
+        density: float = -1.0,
+        transport: _OldTransportModel | Literal["None"] = "None",
+        initial_state: State | None = None,
+        options: _PhaseOptions | Sequence[_PhaseOptions] = (),
+    ) -> None:
+        Phase.__init__(
+            self, name, elements, species, note, "none", initial_state, options
+        )
+        self.thermo_model = "electron-cloud"
         self.density = density
 
-    def get_yaml(self, out):
+    def get_yaml(self, out: CommentedMap) -> None:
         super().get_yaml(out)
-        out['density'] = applyUnits(self.density)
+        out["density"] = applyUnits(self.density)
 
 
-class liquid_vapor(phase):
+class LiquidVapor(Phase):
     """
     A fluid with a complete liquid/vapor equation of state. This entry type
     selects one of a set of predefined fluids with built-in liquid/vapor
     equations of state. The substance_flag parameter selects the fluid. See
     liquidvapor.cti and liquidvapor.py for the usage of this entry type.
     """
-    pure_fluids = {
-        0: 'water',
-        1: 'nitrogen',
-        2: 'methane',
-        3: 'hydrogen',
-        4: 'oxygen',
-        5: 'HFC-134a',
-        7: 'carbon-dioxide',
-        8: 'heptane'
+
+    pure_fluids: ClassVar[dict[int, str]] = {
+        0: "water",
+        1: "nitrogen",
+        2: "methane",
+        3: "hydrogen",
+        4: "oxygen",
+        5: "HFC-134a",
+        7: "carbon-dioxide",
+        8: "heptane",
     }
+    substance_flag: int
 
-    def __init__(self, name='', elements='', species='', note='',
-                 substance_flag=0, initial_state=None, options=()):
-
-        phase.__init__(self, name, elements, species, note, 'none',
-                       initial_state, options)
-        self.thermo_model = 'pure-fluid'
+    def __init__(
+        self,
+        name: str = "",
+        elements: str = "",
+        species: str | Sequence[str] = "",
+        note: str = "",
+        substance_flag: int = 0,
+        initial_state: State | None = None,
+        options: _PhaseOptions | Sequence[_PhaseOptions] = (),
+    ) -> None:
+        Phase.__init__(
+            self, name, elements, species, note, "none", initial_state, options
+        )
+        self.thermo_model = "pure-fluid"
         self.substance_flag = substance_flag
 
-    def get_yaml(self, out):
+    def get_yaml(self, out: CommentedMap) -> None:
         super().get_yaml(out)
         if self.substance_flag in self.pure_fluids:
-            out['pure-fluid-name'] = self.pure_fluids[self.substance_flag]
+            out["pure-fluid-name"] = self.pure_fluids[self.substance_flag]
         else:
-            raise InputError('liquid_vapor: unrecognized value "{}" for '
-                '"substance_flag"', self.substance_flag)
+            raise InputError(
+                f'liquid_vapor: unrecognized value "{self.substance_flag}" for "substance_flag"',
+            )
 
 
-class pureFluidParameters:
-    def __init__(self, species=None, a_coeff=(), b_coeff=0):
+class PureFluidParameters:
+    species: str
+    a_coeff: tuple[float, float] | float
+    b_coeff: float
+
+    def __init__(
+        self,
+        /,
+        species: str,
+        a_coeff: tuple[float, float] | float,
+        b_coeff: float = 0,
+    ) -> None:
         self.species = species
         self.a_coeff = a_coeff
         self.b_coeff = b_coeff
 
 
-class crossFluidParameters:
-    def __init__(self, species=None, a_coeff=(), b_coeff=()):
-        self.species1, self.species2 = species.split(' ')
+class CrossFluidParameters:
+    species1: str
+    species2: str
+    a_coeff: tuple[float, float] | float
+    b_coeff: tuple[float, float] | float
+
+    def __init__(
+        self,
+        /,
+        species: str,
+        a_coeff: tuple[float, float] | float,
+        b_coeff: tuple[float, float] | float,
+    ) -> None:
+        self.species1, self.species2 = species.split(" ")
         self.a_coeff = a_coeff
         self.b_coeff = b_coeff
 
 
-class RedlichKwongMFTP(phase):
+class RedlichKwongMFTP(Phase):
     """
     A multi-component fluid model for non-ideal gas fluids.
     """
 
-    def __init__(self, name='', elements='', species='', note='',
-                 reactions='none', kinetics='GasKinetics', initial_state=None,
-                 activity_coefficients=None, transport='None', options=()):
+    activity_coefficients: Sequence[PureFluidParameters | CrossFluidParameters]
 
-        phase.__init__(self,name, elements, species, note, reactions,
-                       initial_state,options)
-        self.thermo_model = 'Redlich-Kwong'
+    def __init__(
+        self,
+        name: str = "",
+        elements: str = "",
+        species: str | Sequence[str] = "",
+        note: str = "",
+        reactions: str | Sequence[str] = "none",
+        kinetics: _OldKineticsModel | Literal["None"] = "GasKinetics",
+        initial_state: State | None = None,
+        activity_coefficients: Sequence[PureFluidParameters | CrossFluidParameters] = (),
+        transport: _OldTransportModel | Literal["None"] = "None",
+        options: _PhaseOptions | Sequence[_PhaseOptions] = (),
+    ) -> None:
+        Phase.__init__(
+            self, name, elements, species, note, reactions, initial_state, options
+        )
+        self.thermo_model = "Redlich-Kwong"
         self.kinetics = None if kinetics == "None" else kinetics
         self.transport = None if transport == "None" else transport
         self.activity_coefficients = activity_coefficients
 
-    def get_yaml(self, out):
+    def get_yaml(self, out: CommentedMap) -> None:
         super().get_yaml(out)
         for section, names in self.species:
-            if section != 'species':
-                _printerr("WARNING: Converting Redlich-Kwong species from"
-                    " different input files ({}) is not supported.".format(section))
+            if section != "species":
+                _printerr(
+                    "WARNING: Converting Redlich-Kwong species from"
+                    " different input files ({}) is not supported.".format(section)
+                )
 
         spdict = {sp.name: sp for sp in _species}
         for params in self.activity_coefficients:
-            if isinstance(params, pureFluidParameters):
+            if isinstance(params, PureFluidParameters):
                 sp = spdict[params.species]
-                sp.rk_pure = {'a': params.a_coeff, 'b': params.b_coeff}
-            elif isinstance(params, crossFluidParameters):
+                sp.rk_pure = {"a": params.a_coeff, "b": params.b_coeff}
+            elif isinstance(params, CrossFluidParameters):
                 sp1 = spdict[params.species1]
                 sp1.rk_binary[params.species2] = params.a_coeff
                 sp2 = spdict[params.species2]
                 sp2.rk_binary[params.species1] = params.a_coeff
 
 
-class constantIncompressible:
+class ConstantIncompressible:
     """Constant molar volume."""
-    def __init__(self, molarVolume=0.0):
+
+    molar_volume: float
+
+    def __init__(self, molarVolume: float = 0.0) -> None:
         """
         :param molarVolume:
             Reference-state molar volume. Default: 0.0.
@@ -1345,27 +1793,51 @@ class constantIncompressible:
         self.molar_volume = molarVolume
 
 
-class IdealSolidSolution(phase):
+class IdealSolidSolution(Phase):
     """An IdealSolidSolution phase."""
-    def __init__(self, name='', elements='', species='', note='',
-                 transport='None', initial_state=None,
-                 standard_concentration=None, options=()):
-        phase.__init__(self, name, elements, species, note, 'none',
-                       initial_state, options)
-        self.thermo_model = 'ideal-condensed'
+
+    standard_concentration: _OldConcentrationBasis
+
+    def __init__(
+        self,
+        name: str = "",
+        elements: str = "",
+        species: str | Sequence[str] = "",
+        note: str = "",
+        transport: _OldTransportModel | Literal["None"] = "None",
+        initial_state: State | None = None,
+        standard_concentration: _OldConcentrationBasis | None = None,
+        options: _PhaseOptions | Sequence[_PhaseOptions] = (),
+    ) -> None:
+        Phase.__init__(
+            self, name, elements, species, note, "none", initial_state, options
+        )
+        self.thermo_model = "ideal-condensed"
+        if standard_concentration is None:
+            raise InputError(
+                "In phase {}: standard_concentration must be specified.", name
+            )
         self.standard_concentration = standard_concentration
-        if self.standard_concentration is None:
-            raise InputError('In phase {}: standard_concentration must be specified.', name)
         self.transport = None if transport == "None" else transport
 
-    def get_yaml(self, out):
+    def get_yaml(self, out: CommentedMap) -> None:
         super().get_yaml(out)
-        out['standard-concentration-basis'] = _newNames[self.standard_concentration]
+        out["standard-concentration-basis"] = _newNames[self.standard_concentration]
 
 
-class table:
+class Table:
     """User provided thermo table for BinarySolutionTabulatedThermo"""
-    def __init__(self, moleFraction=([],''), enthalpy=([],''), entropy=([],'')):
+
+    x: tuple[Sequence[float], str]
+    h: tuple[Sequence[float], str]
+    s: tuple[Sequence[float], str]
+
+    def __init__(
+        self,
+        moleFraction: tuple[Sequence[float], str] = ([], ""),
+        enthalpy: tuple[Sequence[float], str] = ([], ""),
+        entropy: tuple[Sequence[float], str] = ([], ""),
+    ) -> None:
         """
         :param moleFraction:
             The mole fraction of the tabulated species. Required parameter.
@@ -1381,10 +1853,23 @@ class table:
 
 class BinarySolutionTabulatedThermo(IdealSolidSolution):
     """A BinarySolutionTabulatedThermo phase."""
-    def __init__(self, name='', elements='', species='', note='',
-                 transport='None', initial_state=None,
-                 standard_concentration=None, tabulated_species=None,
-                 tabulated_thermo=None, options=()):
+
+    tabulated_species: str
+    tabulated_thermo: Table
+
+    def __init__(
+        self,
+        name: str = "",
+        elements: str = "",
+        species: str | Sequence[str] = "",
+        note: str = "",
+        transport: _OldTransportModel | Literal["None"] = "None",
+        initial_state: State | None = None,
+        standard_concentration: _OldConcentrationBasis | None = None,
+        tabulated_species: str | None = None,
+        tabulated_thermo: Table | None = None,
+        options: _PhaseOptions | Sequence[_PhaseOptions] = (),
+    ) -> None:
         """
         The parameters correspond to those of :class:`phase`, with the
         following modifications:
@@ -1400,56 +1885,95 @@ class BinarySolutionTabulatedThermo(IdealSolidSolution):
             and entropy to be added to the ``tabulated_species``.
 
         """
-        super().__init__(name, elements, species, note, transport,
-                         initial_state, standard_concentration, options)
-        self.thermo_model = 'binary-solution-tabulated'
+        super().__init__(
+            name,
+            elements,
+            species,
+            note,
+            transport,
+            initial_state,
+            standard_concentration,
+            options,
+        )
+        self.thermo_model = "binary-solution-tabulated"
+        if tabulated_species is None:
+            raise InputError("In phase {}: tabulated_species must be specified.", name)
+        if tabulated_thermo is None:
+            raise InputError(
+                "In phase {}: Thermo data must be provided for the tabulated_species.",
+                name,
+            )
         self.tabulated_species = tabulated_species
         self.tabulated_thermo = tabulated_thermo
-        if tabulated_species is None:
-            raise InputError('In phase {}: tabulated_species must be specified.', name)
-        if tabulated_thermo is None:
-            raise InputError('In phase {}: Thermo data must be provided for the tabulated_species.', name)
 
-    def get_yaml(self, out):
+    def get_yaml(self, out: CommentedMap) -> None:
         super().get_yaml(out)
-        out['tabulated-species'] = self.tabulated_species
-        energy_units, quantity_units = self.tabulated_thermo.h[1].split('/')
+        out["tabulated-species"] = self.tabulated_species
+        energy_units, quantity_units = self.tabulated_thermo.h[1].split("/")
         tabThermo = BlockMap()
         if energy_units != _uenergy or quantity_units != _umol:
-            tabThermo['units'] = FlowMap([('energy', energy_units),
-                                          ('quantity', quantity_units)])
-        tabThermo['mole-fractions'] = FlowList(self.tabulated_thermo.x[0])
-        tabThermo['enthalpy'] = FlowList(self.tabulated_thermo.h[0])
-        tabThermo['entropy'] = FlowList(self.tabulated_thermo.s[0])
-        out['tabulated-thermo'] = tabThermo
+            tabThermo["units"] = FlowMap(
+                [("energy", energy_units), ("quantity", quantity_units)]
+            )
+        tabThermo["mole-fractions"] = FlowList(self.tabulated_thermo.x[0])
+        tabThermo["enthalpy"] = FlowList(self.tabulated_thermo.h[0])
+        tabThermo["entropy"] = FlowList(self.tabulated_thermo.s[0])
+        out["tabulated-thermo"] = tabThermo
 
-class lattice(phase):
-    def __init__(self, name='', elements='', species='', note='',
-                 reactions='none', transport='None', initial_state=None,
-                 options=(), site_density=None):
-        phase.__init__(self, name, elements, species, note, 'none',
-                       initial_state, options)
-        self.thermo_model = 'lattice'
+
+class Lattice(Phase):
+    site_density: float
+
+    def __init__(
+        self,
+        name: str = "",
+        elements: str = "",
+        species: str | Sequence[str] = "",
+        note: str = "",
+        reactions: str | Sequence[str] = "none",
+        transport: _OldTransportModel | Literal["None"] = "None",
+        initial_state: State | None = None,
+        options: _PhaseOptions | Sequence[_PhaseOptions] = (),
+        site_density: float | None = None,
+    ) -> None:
+        Phase.__init__(
+            self, name, elements, species, note, "none", initial_state, options
+        )
+        self.thermo_model = "lattice"
+
+        if name == "":
+            raise InputError("sublattice name must be specified")
+        if species == "":
+            raise InputError("sublattice species must be specified")
+        if site_density is None:
+            raise InputError("sublattice " + name + " site density must be specified")
         self.site_density = site_density
 
-        if name == '':
-            raise InputError('sublattice name must be specified')
-        if species == '':
-            raise InputError('sublattice species must be specified')
-        if site_density is None:
-            raise InputError('sublattice '+name
-                            +' site density must be specified')
-
-    def get_yaml(self, out):
+    def get_yaml(self, out: CommentedMap) -> None:
         super().get_yaml(out)
-        out['site-density'] = applyUnits(self.site_density)
+        out["site-density"] = applyUnits(self.site_density)
 
-class ideal_interface(phase):
+
+class IdealInterface(Phase):
     """A chemically-reacting ideal surface solution of multiple species."""
-    def __init__(self, name='', elements='', species='', note='',
-                 reactions='none', site_density=0.0, phases=(),
-                 kinetics='Interface', transport='None', initial_state=None,
-                 options=()):
+
+    site_density: float
+    adjacent_phases: list[str]
+
+    def __init__(
+        self,
+        name: str = "",
+        elements: str = "",
+        species: str = "",
+        note: str = "",
+        reactions: str = "none",
+        site_density: float = 0.0,
+        phases: str = "",
+        kinetics: _OldKineticsModel | Literal["None"] = "Interface",
+        transport: _OldTransportModel | Literal["None"] = "None",
+        initial_state: State | None = None,
+        options: _PhaseOptions | Sequence[_PhaseOptions] = (),
+    ) -> None:
         """
         The parameters correspond to those of :class:`phase`, with the
         following modifications:
@@ -1465,87 +1989,71 @@ class ideal_interface(phase):
             A string listing the bulk phases that participate in reactions
             at this interface.
         """
-        phase.__init__(self, name, elements, species, note, reactions,
-                       initial_state, options)
-        self.thermo_model = 'ideal-surface'
+        Phase.__init__(
+            self, name, elements, species, note, reactions, initial_state, options
+        )
+        self.thermo_model = "ideal-surface"
         self.kinetics = None if kinetics == "None" else kinetics
         self.transport = None if transport == "None" else transport
         self.site_density = site_density
         self.adjacent_phases = phases.split()
 
-    def get_yaml(self, out):
+    def get_yaml(self, out: CommentedMap) -> None:
         super().get_yaml(out)
         if self.adjacent_phases:
-            out['adjacent-phases'] = FlowList(self.adjacent_phases)
-        out['site-density'] = applyUnits(self.site_density)
+            out["adjacent-phases"] = FlowList(self.adjacent_phases)
+        out["site-density"] = applyUnits(self.site_density)
         if _motz_wise is not None:
-            out['Motz-Wise'] = _motz_wise
+            out["Motz-Wise"] = _motz_wise
 
 
-class edge(ideal_interface):
+class Edge(IdealInterface):
     """A 1D boundary between two surface phases."""
-    def __init__(self, name='', elements='', species='', note='',
-                 reactions='none', site_density=0.0, phases=(), kinetics='Edge',
-                 transport='None', initial_state=None, options=()):
 
-        ideal_interface.__init__(self, name, elements, species, note, reactions,
-            site_density, phases, kinetics, transport, initial_state, options)
-        self.thermo_model = 'edge'
-
-
-# Falloff parameterizations
-
-class Troe:
-    """The Troe falloff function."""
-    def __init__(self, A=0.0, T3=0.0, T1=0.0, T2=None):
-        """
-        Parameters: *A*, *T3*, *T1*, *T2*. These must be entered as pure
-        numbers with no attached dimensions.
-        """
-        self.A = A
-        self.T3 = T3
-        self.T1 = T1
-        self.T2 = T2
-
-    def get_yaml(self, out):
-        troe = FlowMap([('A', self.A), ('T3', self.T3), ('T1', self.T1)])
-        if self.T2 is not None:
-            troe['T2'] = self.T2
-        out['Troe'] = troe
-
-
-class SRI:
-    """ The SRI falloff function."""
-    def __init__(self, A=0.0, B=0.0, C=0.0, D=None, E=None):
-        """
-        Parameters: *A*, *B*, *C*, *D*, *E*. These must be entered as
-        pure numbers without attached dimensions.
-        """
-        self.A = A
-        self.B = B
-        self.C = C
-        self.D = D
-        self.E = E
-
-    def get_yaml(self, out):
-        sri = FlowMap([('A', self.A), ('B', self.B), ('C', self.C)])
-        if self.D is not None:
-            sri['D'] = self.D
-        if self.E is not None:
-            sri['E'] = self.E
-        out['SRI'] = sri
+    def __init__(
+        self,
+        name: str = "",
+        elements: str = "",
+        species: str = "",
+        note: str = "",
+        reactions: str = "none",
+        site_density: float = 0.0,
+        phases: str = "",
+        kinetics: _OldKineticsModel | Literal["None"] = "Edge",
+        transport: _OldTransportModel | Literal["None"] = "None",
+        initial_state: State | None = None,
+        options: _PhaseOptions | Sequence[_PhaseOptions] = (),
+    ) -> None:
+        super().__init__(
+            name,
+            elements,
+            species,
+            note,
+            reactions,
+            site_density,
+            phases,
+            kinetics,
+            transport,
+            initial_state,
+            options,
+        )
+        self.thermo_model = "edge"
 
 
-class Lindemann:
-    """The Lindemann falloff function."""
-    def get_yaml(self, out):
-        pass
+# Note: Many more encodings available, but you probably don't want most of them.
+# See: https://docs.python.org/3/library/codecs.html#standard-encodings
+_Encoding: TypeAlias = Literal["utf-8", "latin-1", "ascii"]
 
 
-def convert(filename=None, output_name=None, text=None, encoding="latin-1"):
+def convert(
+    filename: Path | str | None = None,
+    output_name: Path | str | None = None,
+    text: str | None = None,
+    encoding: _Encoding = "latin-1",
+) -> tuple[int, int, list[str], Path]:
     # Reset global state, in case cti2yaml is being used as a module and convert
     # is being called multiple times.
-    units('m', 'kmol', 'kg', 's', 'J/kmol', 'J', 'Pa')
+    units("m", "kmol", "kg", "s", "J/kmol", "J", "Pa")
     standard_pressure(OneAtm)
     global _motz_wise
     _motz_wise = None
@@ -1554,29 +2062,32 @@ def convert(filename=None, output_name=None, text=None, encoding="latin-1"):
     _speciesnames.clear()
     _phases.clear()
     _reactions.clear()
-    _reactions['reactions'] = []
+    _reactions["reactions"] = []
 
     if filename is None and text is None:
         raise ValueError("One of filename or text must be specified")
     elif filename is not None and text is not None:
         raise ValueError("Only one of filename or text should be specified")
 
+    base: str = ""
     if filename is not None:
-        filename = pathlib.Path(filename).expanduser()
+        filename = Path(filename).expanduser()
         base = filename.name
         root = filename.stem
         dataset(root)
 
-    if output_name is None and _name != 'noname':
-        output_name = pathlib.Path(_name + '.yaml')
-    else:
-        output_name = pathlib.Path(output_name)
+    if output_name is None and _name != "noname":
+        output_name = Path(_name + ".yaml")
+    elif output_name is not None:
+        output_name = Path(output_name)
+    assert isinstance(output_name, Path)
 
     try:
         if filename is not None:
             text = filename.read_text(encoding=encoding)
         else:
             filename = "<string>"
+        assert text is not None
         code = compile(text, str(filename), "exec")
         exec(code)
     except FileNotFoundError as err:
@@ -1585,178 +2096,203 @@ def convert(filename=None, output_name=None, text=None, encoding="latin-1"):
     except SyntaxError as err:
         # Show more context than the default SyntaxError message
         # to help see problems in multi-line statements
-        text = text.split('\n')
-        _printerr('{} in "{}" on line {}:\n'.format(
-            err.__class__.__name__, err.filename, err.lineno))
-        _printerr('|  Line |')
-        for i in range(max(err.lineno-6, 0),
-                       min(err.lineno+3, len(text))):
-            _printerr('| {: 5d} |'.format(i+1), text[i].rstrip())
-            if i == err.lineno-1:
-                _printerr(' '* (err.offset+9) + '^')
+        assert text is not None
+        split_text: list[str] = text.split("\n")
+        assert err.lineno is not None
+        assert err.offset is not None
+        _printerr(
+            '{} in "{}" on line {}:\n'.format(
+                err.__class__.__name__, err.filename, err.lineno
+            )
+        )
+        _printerr("|  Line |")
+        for i in range(max(err.lineno - 6, 0), min(err.lineno + 3, len(text))):
+            _printerr("| {: 5d} |".format(i + 1), split_text[i].rstrip())
+            if i == err.lineno - 1:
+                _printerr(" " * (err.offset + 9) + "^")
         _printerr()
         sys.exit(3)
     except Exception as err:
         import traceback
 
-        text = text.split('\n')
+        assert text is not None
+        split_text = text.split("\n")
         tb = traceback.extract_tb(sys.exc_info()[2])
         lineno = tb[-1][1]
         if tb[-1][0] == filename:
             # Error in input file
-            _printerr('{} on line {} of {}:'.format(
-                err.__class__.__name__, lineno, filename))
+            _printerr(
+                "{} on line {} of {}:".format(err.__class__.__name__, lineno, filename)
+            )
             _printerr(err)
-            _printerr('\n| Line |')
+            _printerr("\n| Line |")
 
-            for i in range(max(lineno-6, 0),
-                           min(lineno+3, len(text))):
-                if i == lineno-1:
-                    _printerr('> {: 4d} >'.format(i+1), text[i].rstrip())
+            for i in range(max(lineno - 6, 0), min(lineno + 3, len(text))):
+                if i == lineno - 1:
+                    _printerr("> {: 4d} >".format(i + 1), split_text[i].rstrip())
                 else:
-                    _printerr('| {: 4d} |'.format(i+1), text[i].rstrip())
+                    _printerr("| {: 4d} |".format(i + 1), split_text[i].rstrip())
         else:
             # Error in cti2yaml or elsewhere
             traceback.print_exc()
         sys.exit(4)
 
     # get file description from header block
-    description = []
+    assert text is not None
+    split_text = []
     for line in text.splitlines():
         # only consider comments in the initial contiguous comment block
         # comments start with '#'; there may be empty leading lines
-        if description and not line.startswith("#"):
+        if split_text and not line.startswith("#"):
             break
         elif line.strip():
-            description.append(line[1:].rstrip())
-    description = textwrap.dedent("\n".join(description).strip("\n"))
+            split_text.append(line[1:].rstrip())
+    description: str = textwrap.dedent("\n".join(split_text).strip("\n"))
 
     # write the YAML file
     emitter = yaml.YAML()
     emitter.width = 70
 
     for name, cls in globals().items():
-        if hasattr(cls, 'to_yaml'):
+        if hasattr(cls, "to_yaml"):
             emitter.register_class(cls)
 
-    with output_name.open('w') as dest:
+    with output_name.open("w") as dest:
         if description:
             emitter.dump(
-                BlockMap([
-                    ("description", yaml.scalarstring.LiteralScalarString(description))
-                ]), dest)
+                BlockMap(
+                    [
+                        (
+                            "description",
+                            yaml.scalarstring.LiteralScalarString(description),
+                        )
+                    ]
+                ),
+                dest,
+            )
 
         # information regarding conversion
-        metadata = BlockMap([
-            ("generator", "cti2yaml"),
-            ("cantera-version", "3.2.0a4"),
-            ("date", formatdate(localtime=True)),
-        ])
+        metadata = BlockMap(
+            [
+                ("generator", "cti2yaml"),
+                ("cantera-version", "3.2.0a4"),
+                ("date", formatdate(localtime=True)),
+            ]
+        )
         if filename != "<string>":
-            metadata['input-files'] = FlowList([base])
+            metadata["input-files"] = FlowList([base])
         if description:
             metadata.yaml_set_comment_before_after_key("generator", before="\n")
         emitter.dump(metadata, dest)
 
         out_units = FlowMap([])
-        if _umass != 'kg':
-            out_units['mass'] = _umass
-        if _ulen != 'm':
-            out_units['length'] = _ulen
-        if _utime != 's':
-            out_units['time'] = _utime
-        if _upres != 'Pa':
-            out_units['pressure'] = _upres
-        if _uenergy != 'J':
-            out_units['energy'] = _uenergy
-        if _umol != 'kmol':
-            out_units['quantity'] = _umol
-        if _ue != 'J/kmol':
-            out_units['activation-energy'] = _ue
+        if _umass != "kg":
+            out_units["mass"] = _umass
+        if _ulen != "m":
+            out_units["length"] = _ulen
+        if _utime != "s":
+            out_units["time"] = _utime
+        if _upres != "Pa":
+            out_units["pressure"] = _upres
+        if _uenergy != "J":
+            out_units["energy"] = _uenergy
+        if _umol != "kmol":
+            out_units["quantity"] = _umol
+        if _ue != "J/kmol":
+            out_units["activation-energy"] = _ue
 
         if out_units:
-            units_map = BlockMap([('units', out_units)])
-            units_map.yaml_set_comment_before_after_key('units', before='\n')
+            units_map = BlockMap([("units", out_units)])
+            units_map.yaml_set_comment_before_after_key("units", before="\n")
             emitter.dump(units_map, dest)
 
         if _elements:
-            elements_map = BlockMap([('elements', _elements)])
-            elements_map.yaml_set_comment_before_after_key('elements', before='\n')
+            elements_map = BlockMap([("elements", _elements)])
+            elements_map.yaml_set_comment_before_after_key("elements", before="\n")
             emitter.dump(elements_map, dest)
 
         if _phases:
-            phases_map = BlockMap([('phases', _phases)])
-            phases_map.yaml_set_comment_before_after_key('phases', before='\n')
+            phases_map = BlockMap([("phases", _phases)])
+            phases_map.yaml_set_comment_before_after_key("phases", before="\n")
             emitter.dump(phases_map, dest)
 
         if _species:
-            species_map = BlockMap([('species', _species)])
-            species_map.yaml_set_comment_before_after_key('species', before='\n')
+            species_map = BlockMap([("species", _species)])
+            species_map.yaml_set_comment_before_after_key("species", before="\n")
             emitter.dump(species_map, dest)
 
         for name, reactions in _reactions.items():
             if reactions:
                 reactions_map = BlockMap([(name, reactions)])
-                reactions_map.yaml_set_comment_before_after_key(name, before='\n')
+                reactions_map.yaml_set_comment_before_after_key(name, before="\n")
                 emitter.dump(reactions_map, dest)
 
-    surfaces = []
+    surfaces: list[str] = []
     for phase in _phases:
-        if isinstance(phase, ideal_interface):
+        if isinstance(phase, IdealInterface):
             surfaces.append(phase.name)
 
     return len(_species), len(_reactions), surfaces, output_name
 
 
-def create_argparser():
+def create_argparser() -> ArgumentParser:
     """
     Create argparse parser
     """
-    parser = argparse.ArgumentParser(
+    parser = ArgumentParser(
         description=(
             "Convert legacy CTI input files to YAML format, where the first contiguous "
-            "comment block is used as file description"),
+            "comment block is used as file description"
+        ),
         epilog=(
             "The 'output' argument is optional. If it is not given, an output "
             "file with the same name as the input file is used, with the extension "
-            "changed to '.yaml'.")
+            "changed to '.yaml'."
+        ),
     )
     parser.add_argument("input", help="The input CTI filename. Must be specified.")
     parser.add_argument("output", nargs="?", help="The output YAML filename. Optional.")
     parser.add_argument(
-        "--input-encoding", default="latin-1", metavar="",
-        help="Character encoding of the file. Default is 'latin-1'.")
+        "--input-encoding",
+        default="latin-1",
+        metavar="",
+        help="Character encoding of the file. Default is 'latin-1'.",
+    )
     parser.add_argument(
-        "--quiet", action="store_true", default=False,
-        help="Do not produce output.")
+        "--quiet", action="store_true", default=False, help="Do not produce output."
+    )
     parser.add_argument(
-        "--no-validate", action="store_true", default=False,
-        help="Skip validation step.")
+        "--no-validate",
+        action="store_true",
+        default=False,
+        help="Skip validation step.",
+    )
 
     return parser
 
 
-def main():
+def main() -> None:
     """Parse command line arguments and pass them to `convert`."""
-    parser = create_argparser()
+    parser: ArgumentParser = create_argparser()
     if len(sys.argv) not in [2, 3, 4, 5]:
         if len(sys.argv) > 5:
             print(
                 "cti2yaml.py: error: unrecognized arguments:",
-                ' '.join(sys.argv[5:]),
+                " ".join(sys.argv[5:]),
                 file=sys.stderr,
             )
         parser.print_help(sys.stderr)
         sys.exit(1)
     args = parser.parse_args()
-    input_file = pathlib.Path(args.input)
+    input_file = Path(args.input)
     if args.output is None:
         output_file = input_file.with_suffix(".yaml")
     else:
-        output_file = pathlib.Path(args.output)
+        output_file = Path(args.output)
 
     n_spc, n_rxn, surfaces, output_name = convert(
-        input_file, output_file, encoding=args.input_encoding)
+        input_file, output_file, encoding=args.input_encoding
+    )
 
     if not args.quiet:
         print(f"Wrote YAML mechanism file to '{output_name}'.")
@@ -1769,8 +2305,10 @@ def main():
     try:
         from cantera import Solution, Interface
     except ImportError:
-        print("WARNING: Unable to import Cantera Python module. "
-            "Output mechanism has not been validated")
+        print(
+            "WARNING: Unable to import Cantera Python module. "
+            "Output mechanism has not been validated"
+        )
         sys.exit(0)
 
     try:
