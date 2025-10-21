@@ -28,30 +28,23 @@ from typing import (
     Literal,
     TypeAlias,
     TypedDict,
-    TypeVar,
     cast,
 )
 
 import numpy as np
-from ruamel import yaml
-from ruamel.yaml.comments import CommentedMap, CommentedSeq
-from ruamel.yaml.nodes import MappingNode, ScalarNode
-from ruamel.yaml.representer import RoundTripRepresenter, SafeRepresenter
 from typing_extensions import Required
 
-from ._types import literal_type_guard
-
-# yaml.version_info is a tuple with the three parts of the version
-yaml_version: tuple[int, int, int] = yaml.version_info
-# We choose ruamel.yaml 0.17.16 as the minimum version since it is the highest version
-# available in the Ubuntu 22.04 repositories.
-yaml_min_version: tuple[int, int, int] = (0, 17, 16)
-if yaml_version < yaml_min_version:
-    raise RuntimeError(
-        "The minimum supported version of ruamel.yaml is 0.17.16. If you "
-        "installed ruamel.yaml from your operating system's package manager, "
-        "please install an updated version using pip or conda."
-    )
+from ._types import (
+    BlockMap,
+    CommentedMap,
+    FlowList,
+    FlowMap,
+    MappingNode,
+    SafeRepresenter,
+    float2string,
+    literal_type_guard,
+    yaml,
+)
 
 _QuantityType: TypeAlias = float | str
 
@@ -161,27 +154,6 @@ _HmwThermoType: TypeAlias = (
 )
 
 
-BlockMap: type[CommentedMap] = CommentedMap
-
-
-_KT = TypeVar("_KT")  # Key type.
-_VT = TypeVar("_VT")  # Value type.
-
-
-def FlowMap(*args: dict[_KT, _VT], **kwargs: _VT) -> dict[_KT, _VT]:
-    """A YAML mapping that flows onto one line."""
-    m: CommentedMap = CommentedMap(*args, **kwargs)
-    m.fa.set_flow_style()
-    return m
-
-
-def FlowList(*args: Iterable[_VT], **kwargs: _VT) -> list[_VT]:
-    """A YAML sequence that flows onto one line."""
-    lst: CommentedSeq = CommentedSeq(*args, **kwargs)
-    lst.fa.set_flow_style()
-    return cast(list[_VT], lst)
-
-
 class MissingXMLNode(LookupError):
     def __init__(self, message: str = "", node: etree.Element | None = None) -> None:
         """Error raised when a required node is missing in the XML tree.
@@ -237,47 +209,6 @@ class MissingNodeText(LookupError):
                 message = node_str
 
         super().__init__(message)
-
-
-def float2string(data: float) -> str:
-    """Format a float into a string.
-
-    :param data: The floating point data to be formatted.
-
-    Values with magnitude between 0.01 and 10000 are formatted using
-    ``format_float_positional()`` and other values are formatted using
-    ``format_float_scientific()``.
-    """
-    if data == 0:
-        return "0.0"
-    elif 0.01 <= abs(data) < 10000:
-        return np.format_float_positional(data, trim="0")
-    else:
-        return np.format_float_scientific(data, trim="0")
-
-
-def represent_float(self: SafeRepresenter, data: float) -> ScalarNode:
-    """Format floating point numbers for ruamel YAML.
-
-    :param data:
-        The floating point data to be formatted.
-
-    Uses `float2string` to format the floating point input to a string, then inserts
-    the resulting string into the YAML tree as a scalar.
-    """
-    if data != data:
-        value = ".nan"
-    elif data == self.inf_value:
-        value = ".inf"
-    elif data == -self.inf_value:
-        value = "-.inf"
-    else:
-        value = float2string(data)
-
-    return self.represent_scalar("tag:yaml.org,2002:float", value)
-
-
-RoundTripRepresenter.add_representer(float, represent_float)
 
 
 def get_float_or_quantity(node: etree.Element) -> _QuantityType:

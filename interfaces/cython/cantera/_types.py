@@ -1,10 +1,159 @@
 # This file is part of Cantera. See License.txt in the top-level directory or
 # at https://cantera.org/license.txt for license and copyright information.
 
-from typing import get_args
+from _collections_abc import dict_items
+from collections.abc import Callable, Iterable
+from types import EllipsisType
+from typing import (
+    Any,
+    Concatenate,
+    Literal,
+    TypeAlias,
+    TypedDict,
+    TypeGuard,
+    TypeVar,
+    cast,
+    get_args,
+    overload,
+)
+
+import numpy as np
+from numpy.typing import ArrayLike as ArrayLike
+from numpy.typing import NDArray
+from ruamel import yaml as yaml
+from ruamel.yaml.comments import CommentedMap as CommentedMap
+from ruamel.yaml.comments import CommentedSeq as CommentedSeq
+from ruamel.yaml.nodes import MappingNode as MappingNode
+from ruamel.yaml.nodes import ScalarNode as ScalarNode
+from ruamel.yaml.representer import RoundTripRepresenter as RoundTripRepresenter
+from ruamel.yaml.representer import SafeRepresenter as SafeRepresenter
+from typing_extensions import ParamSpec, TypeForm
+
+Array: TypeAlias = NDArray[np.float64]
+Index: TypeAlias = EllipsisType | int | slice | tuple[EllipsisType | int | slice, ...]
+
+Basis: TypeAlias = Literal["mole", "molar", "mass"]
+EquilibriumSolver: TypeAlias = Literal["element_potential", "gibbs", "vcs", "auto"]
+LogLevel: TypeAlias = Literal[0, 1, 2, 3, 4, 5]
+LogLevel7: TypeAlias = Literal[0, 1, 2, 3, 4, 5, 6, 7]
+CompressionLevel: TypeAlias = Literal[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+
+# ThermoPhase state definitions
+StateVariable: TypeAlias = Literal["T", "D", "P", "U", "H", "S", "V"]
+PropertyPair: TypeAlias = Literal["TP", "TV", "HP", "SP", "SV", "UV"]
+CompositionVariable: TypeAlias = Literal["X", "Y"]
+FullState: TypeAlias = Literal[
+    "TDX",
+    "TDY",
+    "TPX",
+    "TPY",
+    "UVX",
+    "UVY",
+    "DPX",
+    "DPY",
+    "HPX",
+    "HPY",
+    "SPX",
+    "SPY",
+    "SVX",
+    "SVY",
+]
+CompositionLike: TypeAlias = str | dict[str, float] | ArrayLike
+StateSetter: TypeAlias = tuple[float, float, CompositionLike]
+ArrayCompositionLike: TypeAlias = str | dict[str, ArrayLike] | ArrayLike
+ArrayStateSetter: TypeAlias = tuple[ArrayLike, ArrayLike, ArrayCompositionLike]
+
+# PureFluid state definitions
+PureFluidStateVariable: TypeAlias = Literal[StateVariable, "Q"]
+PureFluidPropertyPair: TypeAlias = Literal[
+    PropertyPair, "TQ", "PQ", "ST", "TV", "PV", "UP", "VH", "TH", "SH"
+]
+PureFluidFullState: TypeAlias = Literal[
+    FullState, "TDQ", "TPQ", "UVQ", "DPQ", "HPQ", "SPQ", "SVQ"
+]
+PureFluidStateSetter: TypeAlias = tuple[float, float, float]
+ArrayPureFluidStateSetter: TypeAlias = tuple[ArrayLike, ArrayLike, ArrayLike]
+
+RefineCriteria = TypedDict(
+    "RefineCriteria",
+    {
+        "ratio": float,
+        "slope": float,
+        "curve": float,
+        "prune": float,
+        "grid-min": float,
+        "max-points": int,
+    },
+    total=False,
+)
 
 
-def add_args_to_signature(*_, **__):
+class StateDefinition(TypedDict, total=False):
+    D: float
+    H: float
+    P: float
+    S: float
+    T: float
+    V: float
+    X: CompositionLike
+    Y: CompositionLike
+
+    DPX: StateSetter
+    DPY: StateSetter
+    HPX: StateSetter
+    HPY: StateSetter
+    SPX: StateSetter
+    SPY: StateSetter
+    SVX: StateSetter
+    SVY: StateSetter
+    TDX: StateSetter
+    TDY: StateSetter
+    TPX: StateSetter
+    TPY: StateSetter
+    UVX: StateSetter
+    UVY: StateSetter
+
+
+# Convenience functions for type annotations
+_P = ParamSpec("_P")
+
+_TSelf = TypeVar("_TSelf")
+_TReturn = TypeVar("_TReturn")
+_T0 = TypeVar("_T0")
+_T1 = TypeVar("_T1")
+_T2 = TypeVar("_T2")
+
+
+@overload
+def add_args_to_signature(
+    _to_signature: Callable[Concatenate[_TSelf, _P], _TReturn],
+    _new_arg_type0: type[_T0],
+) -> Callable[
+    [Callable[..., _TReturn]], Callable[Concatenate[_TSelf, _T0, _P], _TReturn]
+]: ...
+@overload
+def add_args_to_signature(
+    _to_signature: Callable[Concatenate[_TSelf, _P], _TReturn],
+    _new_arg_type0: type[_T0],
+    _new_arg_type1: type[_T1],
+) -> Callable[
+    [Callable[..., _TReturn]], Callable[Concatenate[_TSelf, _T0, _T1, _P], _TReturn]
+]: ...
+@overload
+def add_args_to_signature(
+    _to_signature: Callable[Concatenate[_TSelf, _P], _TReturn],
+    _new_arg_type0: type[_T0],
+    _new_arg_type1: type[_T1],
+    _new_arg_type2: type[_T2],
+) -> Callable[
+    [Callable[..., _TReturn]],
+    Callable[Concatenate[_TSelf, _T0, _T1, _T2, _P], _TReturn],
+]: ...
+def add_args_to_signature(
+    _to_signature: Callable[Concatenate[_TSelf, _P], _TReturn],
+    *_args: Any,
+    **_kwargs: Any,
+) -> Callable[[Callable[..., _TReturn]], Callable[..., _TReturn]]:
     """Decorator which prepends (positional-only) arguments to a function signature.
 
     Adapted from: https://stackoverflow.com/a/75072701
@@ -53,7 +202,7 @@ def add_args_to_signature(*_, **__):
     return lambda f: f
 
 
-def literal_type_guard(tag, literal):
+def literal_type_guard(tag: str, literal: TypeForm[_T0]) -> TypeGuard[_T0]:  # type: ignore[valid-type]
     """Utility function for narrowing strings to specified literals.
 
     Typically used to check a string against the permissible keys of a
@@ -86,3 +235,81 @@ def literal_type_guard(tag, literal):
     .. versionadded:: 3.2
     """
     return tag in get_args(literal)
+
+
+# Common helper methods for the converter routines
+
+# yaml.version_info is a tuple with the three parts of the version
+assert isinstance(yaml.version_info, tuple)
+yaml_version: tuple[int, int, int] = yaml.version_info
+# We choose ruamel.yaml 0.17.16 as the minimum version since it is the highest version
+# available in the Ubuntu 22.04 repositories.
+yaml_min_version: tuple[int, int, int] = (0, 17, 16)
+if yaml_version < yaml_min_version:
+    raise RuntimeError(
+        "The minimum supported version of ruamel.yaml is 0.17.16. If you "
+        "installed ruamel.yaml from your operating system's package manager, "
+        "please install an updated version using pip or conda."
+    )
+
+BlockMap: type[CommentedMap] = CommentedMap
+
+_KT = TypeVar("_KT")  # Key type.
+_VT = TypeVar("_VT")  # Value type.
+
+
+def FlowMap(
+    *args: dict[_KT, _VT] | dict_items[_KT, _VT] | list[tuple[_KT, _VT]], **kwargs: _VT
+) -> dict[_KT, _VT]:
+    """A YAML mapping that flows onto one line."""
+    m: CommentedMap = CommentedMap(*args, **kwargs)
+    m.fa.set_flow_style()
+    return m
+
+
+def FlowList(*args: Iterable[_VT], **kwargs: _VT) -> list[_VT]:
+    """A YAML sequence that flows onto one line."""
+    lst: CommentedSeq = CommentedSeq(*args, **kwargs)
+    lst.fa.set_flow_style()
+    return cast(list[_VT], lst)
+
+
+def float2string(data: float) -> str:
+    """Format a float into a string.
+
+    :param data: The floating point data to be formatted.
+
+    Values with magnitude between 0.01 and 10000 are formatted using
+    ``format_float_positional()`` and other values are formatted using
+    ``format_float_scientific()``.
+    """
+    if data == 0:
+        return "0.0"
+    elif 0.01 <= abs(data) < 10000:
+        return np.format_float_positional(data, trim="0")
+    else:
+        return np.format_float_scientific(data, trim="0")
+
+
+def represent_float(self: SafeRepresenter, data: float) -> ScalarNode:
+    """Format floating point numbers for ruamel YAML.
+
+    :param data:
+        The floating point data to be formatted.
+
+    Uses `float2string` to format the floating point input to a string, then inserts
+    the resulting string into the YAML tree as a scalar.
+    """
+    if data != data:
+        value = ".nan"
+    elif data == self.inf_value:
+        value = ".inf"
+    elif data == -self.inf_value:
+        value = "-.inf"
+    else:
+        value = float2string(data)
+
+    return self.represent_scalar("tag:yaml.org,2002:float", value)
+
+
+RoundTripRepresenter.add_representer(float, represent_float)
